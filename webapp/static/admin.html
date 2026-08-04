@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Admin — Thermal Panel Inspector</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #0f1216;
+    --panel: #171b21;
+    --border: #2a2f37;
+    --text: #e6e9ee;
+    --muted: #9aa4b2;
+    --accent: #4da3ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 2rem 1.25rem 4rem;
+  }
+  main { max-width: 700px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin-bottom: 1.25rem; }
+
+  .topbar {
+    max-width: 700px;
+    margin: 0 auto 1.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .topbar .brand { color: var(--text); text-decoration: none; font-weight: 700; }
+  .topbar nav { display: flex; align-items: center; gap: 1rem; font-size: 0.9rem; }
+  .topbar nav a { color: var(--muted); text-decoration: none; }
+  .topbar nav a:hover { color: var(--text); }
+  .topbar .whoami { color: var(--muted); font-size: 0.85rem; }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem;
+    margin-bottom: 1.25rem;
+  }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  th { color: var(--muted); font-weight: 600; }
+
+  select, input {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 0.35rem 0.5rem;
+  }
+  button {
+    background: var(--accent); color: #04121f; border: none; border-radius: 6px;
+    padding: 0.45rem 0.9rem; font-weight: 600; cursor: pointer; font-size: 0.85rem;
+  }
+  button.secondary { background: transparent; border: 1px solid var(--accent); color: var(--accent); }
+  button.danger { background: transparent; border: 1px solid #ff6b6b; color: #ff6b6b; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .fields { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: flex-end; margin-top: 1rem; }
+  .fields label { display: flex; flex-direction: column; font-size: 0.85rem; color: var(--muted); gap: 0.25rem; }
+
+  #createStatus, #rowStatus { font-size: 0.85rem; margin-top: 0.5rem; min-height: 1.1em; }
+  .error { color: #ff6b6b; }
+  .ok { color: #7ad17a; }
+  .inactive { color: var(--muted); }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a href="/" class="brand">Thermal Panel Inspector</a>
+  <nav>
+    <a href="/">Analyze</a>
+    <a href="/history">History</a>
+    <a href="/admin">Admin</a>
+    <span class="whoami" id="whoami"></span>
+    <button class="secondary" id="logoutBtn" style="margin:0; padding: 0.35rem 0.8rem;">Log out</button>
+  </nav>
+</header>
+<main>
+  <h1>User management</h1>
+
+  <div class="panel">
+    <table id="usersTable">
+      <thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Created</th><th></th></tr></thead>
+      <tbody id="usersBody"></tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2 style="margin-top:0; font-size: 1.05rem;">Create user</h2>
+    <div class="fields">
+      <label>Username <input type="text" id="newUsername" /></label>
+      <label>Password <input type="password" id="newPassword" /></label>
+      <label>Role
+        <select id="newRole">
+          <option value="inspector">inspector</option>
+          <option value="admin">admin</option>
+          <option value="viewer">viewer</option>
+        </select>
+      </label>
+      <button id="createBtn">Create</button>
+    </div>
+    <div id="createStatus"></div>
+  </div>
+</main>
+
+<script>
+document.getElementById('logoutBtn').addEventListener('click', async () => {
+  await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
+  window.location.href = '/login';
+});
+
+let myUserId = null;
+
+(async function initUser() {
+  const resp = await fetch('/api/me', { credentials: 'same-origin' });
+  if (!resp.ok) { window.location.href = '/login'; return; }
+  const me = await resp.json();
+  document.getElementById('whoami').textContent = `${me.username} (${me.role})`;
+  if (me.role !== 'admin') { window.location.href = '/'; return; }
+  loadUsers();
+})();
+
+async function loadUsers() {
+  const resp = await fetch('/api/users', { credentials: 'same-origin' });
+  if (!resp.ok) return;
+  const data = await resp.json();
+  const me = data.users.find((u) => u.username === document.getElementById('whoami').textContent.split(' (')[0]);
+  if (me) myUserId = me.id;
+
+  const tbody = document.getElementById('usersBody');
+  tbody.innerHTML = '';
+  data.users.forEach((u) => {
+    const tr = document.createElement('tr');
+    const isSelf = u.id === myUserId;
+    tr.innerHTML = `
+      <td>${u.username}${isSelf ? ' (you)' : ''}</td>
+      <td>
+        <select data-user-id="${u.id}" class="roleSelect" ${isSelf ? 'disabled title="Cannot change your own role"' : ''}>
+          <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>admin</option>
+          <option value="inspector" ${u.role === 'inspector' ? 'selected' : ''}>inspector</option>
+          <option value="viewer" ${u.role === 'viewer' ? 'selected' : ''}>viewer</option>
+        </select>
+      </td>
+      <td class="${u.is_active ? '' : 'inactive'}">${u.is_active ? 'active' : 'deactivated'}</td>
+      <td>${new Date(u.created_at).toLocaleDateString()}</td>
+      <td>
+        <button data-user-id="${u.id}" data-active="${!u.is_active}" class="toggleActiveBtn ${u.is_active ? 'danger' : 'secondary'}"
+          ${isSelf ? 'disabled title="Cannot deactivate your own account"' : ''}>
+          ${u.is_active ? 'Deactivate' : 'Activate'}
+        </button>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  document.querySelectorAll('.roleSelect').forEach((sel) => {
+    sel.addEventListener('change', async () => {
+      const userId = sel.dataset.userId;
+      const status = document.getElementById('rowStatus') || makeRowStatus();
+      const form = new FormData();
+      form.append('role', sel.value);
+      const resp = await fetch(`/api/users/${userId}/role`, { method: 'POST', body: form, credentials: 'same-origin' });
+      const data = await resp.json();
+      if (!resp.ok) {
+        alert(data.detail || 'Failed to change role');
+        loadUsers();
+      }
+    });
+  });
+
+  document.querySelectorAll('.toggleActiveBtn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const userId = btn.dataset.userId;
+      const active = btn.dataset.active === 'true';
+      const form = new FormData();
+      form.append('active', active ? 'true' : 'false');
+      const resp = await fetch(`/api/users/${userId}/active`, { method: 'POST', body: form, credentials: 'same-origin' });
+      const data = await resp.json();
+      if (!resp.ok) {
+        alert(data.detail || 'Failed to update user');
+      }
+      loadUsers();
+    });
+  });
+}
+
+function makeRowStatus() {
+  const div = document.createElement('div');
+  div.id = 'rowStatus';
+  return div;
+}
+
+document.getElementById('createBtn').addEventListener('click', async () => {
+  const statusEl = document.getElementById('createStatus');
+  const username = document.getElementById('newUsername').value.trim();
+  const password = document.getElementById('newPassword').value;
+  const role = document.getElementById('newRole').value;
+
+  statusEl.textContent = '';
+  statusEl.className = '';
+
+  const form = new FormData();
+  form.append('username', username);
+  form.append('password', password);
+  form.append('role', role);
+
+  try {
+    const resp = await fetch('/api/users', { method: 'POST', body: form, credentials: 'same-origin' });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'Failed to create user');
+    document.getElementById('newUsername').value = '';
+    document.getElementById('newPassword').value = '';
+    statusEl.textContent = `Created ${data.username}.`;
+    statusEl.className = 'ok';
+    loadUsers();
+  } catch (err) {
+    statusEl.textContent = err.message;
+    statusEl.className = 'error';
+  }
+});
+</script>
+</body>
+</html>

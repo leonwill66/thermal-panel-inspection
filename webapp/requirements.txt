@@ -1,0 +1,13 @@
+-r ../requirements.txt
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
+sqlalchemy>=2.0
+bcrypt>=4.0
+itsdangerous>=2.1
+# Only needed if DATABASE_URL / SUPABASE_URL are set (Postgres + Supabase
+# Storage in production); the app runs fine without them via local
+# SQLite + disk, but these are cheap to always install.
+psycopg2-binary>=2.9
+supabase>=2.0
+python-dotenv>=1.0

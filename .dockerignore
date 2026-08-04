@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+thermal_report/
+webapp/data/
+samples/
+reports/
+.git/
+.gitignore
+*.md

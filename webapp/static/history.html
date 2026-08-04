@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>History — Thermal Panel Inspector</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #0f1216;
+    --panel: #171b21;
+    --border: #2a2f37;
+    --text: #e6e9ee;
+    --muted: #9aa4b2;
+    --accent: #4da3ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 2rem 1.25rem 4rem;
+  }
+  main { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin-bottom: 1.25rem; }
+
+  .topbar {
+    max-width: 900px;
+    margin: 0 auto 1.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .topbar .brand { color: var(--text); text-decoration: none; font-weight: 700; }
+  .topbar nav { display: flex; align-items: center; gap: 1rem; font-size: 0.9rem; }
+  .topbar nav a { color: var(--muted); text-decoration: none; }
+  .topbar nav a:hover { color: var(--text); }
+  .topbar .whoami { color: var(--muted); font-size: 0.85rem; }
+  button.secondary {
+    background: transparent;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    border-radius: 6px;
+    padding: 0.35rem 0.8rem;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  button { cursor: pointer; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem;
+    margin-bottom: 1.25rem;
+  }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; }
+  tr.run-row { cursor: pointer; }
+  tr.run-row:hover { background: rgba(255,255,255,0.03); }
+
+  .summary-badges { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+  .badge { padding: 0.2rem 0.55rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
+  .badge.minor { background: #4a4200; color: #ffe97a; }
+  .badge.serious { background: #5a3200; color: #ffb45c; }
+  .badge.critical { background: #5a0000; color: #ff7a7a; }
+  .badge.critical_immediate { background: #4a0044; color: #ff7aff; }
+  .badge.none { background: #1c2a1c; color: #9ad19a; }
+
+  #detail { display: none; }
+  #detail .image-block img { max-width: 100%; border-radius: 8px; border: 1px solid var(--border); }
+  #detail .image-block { margin-bottom: 1.5rem; }
+  #detail table.hotspots { margin-top: 0.5rem; }
+
+  .fields { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 1rem; }
+  .fields label { display: flex; flex-direction: column; font-size: 0.85rem; color: var(--muted); gap: 0.25rem; }
+  .fields input, .fields select {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 0.4rem 0.5rem; width: 9rem;
+  }
+  .fields input.wide { width: 14rem; }
+
+  #backLink { color: var(--accent); text-decoration: none; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a href="/" class="brand">Thermal Panel Inspector</a>
+  <nav>
+    <a href="/">Analyze</a>
+    <a href="/history">History</a>
+    <a href="/admin" id="adminLink" style="display:none;">Admin</a>
+    <span class="whoami" id="whoami"></span>
+    <button id="logoutBtn" class="secondary">Log out</button>
+  </nav>
+</header>
+<main>
+  <h1>Analysis history</h1>
+
+  <div class="panel" id="listPanel">
+    <table id="runsTable">
+      <thead>
+        <tr><th>ID</th><th>When</th><th>By</th><th>Images</th><th>Findings</th></tr>
+      </thead>
+      <tbody id="runsBody"></tbody>
+    </table>
+    <div id="emptyMsg" style="display:none; color: var(--muted); margin-top: 0.5rem;">No analyses yet.</div>
+  </div>
+
+  <div class="panel" id="detail">
+    <a id="backLink" href="#">&larr; Back to history</a>
+    <h2 id="detailTitle" style="margin: 0.75rem 0 0.25rem;"></h2>
+    <div id="detailMeta" style="color: var(--muted); font-size: 0.85rem; margin-bottom: 1rem;"></div>
+    <div id="detailImages"></div>
+    <div id="detailSkipped" style="font-size: 0.85rem; color: var(--muted); margin-bottom: 1rem;"></div>
+
+    <div class="section-label" style="text-transform: uppercase; font-size: 0.75rem; color: var(--muted); margin-bottom: 0.5rem;">Download report</div>
+    <div class="fields">
+      <label>Client name <input type="text" id="clientName" class="wide" placeholder="optional" /></label>
+      <label>Site / location <input type="text" id="siteLocation" class="wide" placeholder="optional" /></label>
+      <label>Audit date <input type="date" id="auditDate" /></label>
+      <label>Inspector <input type="text" id="inspectorName" placeholder="optional" /></label>
+      <label>Report ID <input type="text" id="reportId" placeholder="optional" /></label>
+      <label>Report style
+        <select id="reportStyle">
+          <option value="full">Full (all detail)</option>
+          <option value="audit">Audit (findings only)</option>
+        </select>
+      </label>
+    </div>
+    <button id="downloadBtn" style="margin-top: 1rem; background: var(--accent); color: #04121f; border: none; border-radius: 6px; padding: 0.6rem 1.2rem; font-weight: 600;">Download PDF</button>
+    <span id="downloadStatus" style="color: var(--muted); font-size: 0.85rem; margin-left: 0.5rem;"></span>
+  </div>
+</main>
+
+<script>
+const SEVERITY_ORDER = ['critical_immediate', 'critical', 'serious', 'minor'];
+let currentRunId = null;
+
+document.getElementById('logoutBtn').addEventListener('click', async () => {
+  await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
+  window.location.href = '/login';
+});
+
+(async function initUser() {
+  const resp = await fetch('/api/me', { credentials: 'same-origin' });
+  if (!resp.ok) { window.location.href = '/login'; return; }
+  const me = await resp.json();
+  document.getElementById('whoami').textContent = `${me.username} (${me.role})`;
+  if (me.role === 'admin') document.getElementById('adminLink').style.display = '';
+})();
+
+function badgesHtml(summary) {
+  const counts = summary.counts_by_severity || {};
+  const parts = SEVERITY_ORDER.filter((s) => counts[s]).map(
+    (s) => `<span class="badge ${s}">${s.replace('_', ' ')}: ${counts[s]}</span>`
+  );
+  if (!parts.length) parts.push('<span class="badge none">clean</span>');
+  return `<div class="summary-badges">${parts.join('')}</div>`;
+}
+
+async function loadRuns() {
+  const resp = await fetch('/api/history', { credentials: 'same-origin' });
+  const data = await resp.json();
+  const tbody = document.getElementById('runsBody');
+  tbody.innerHTML = '';
+  document.getElementById('emptyMsg').style.display = data.runs.length ? 'none' : 'block';
+
+  data.runs.forEach((run) => {
+    const tr = document.createElement('tr');
+    tr.className = 'run-row';
+    const when = new Date(run.created_at).toLocaleString();
+    tr.innerHTML = `
+      <td>#${run.id}</td>
+      <td>${when}</td>
+      <td>${run.created_by}</td>
+      <td>${run.image_count}</td>
+      <td>${badgesHtml(run.summary)}</td>
+    `;
+    tr.addEventListener('click', () => showDetail(run.id));
+    tbody.appendChild(tr);
+  });
+}
+
+async function showDetail(runId) {
+  const resp = await fetch(`/api/history/${runId}`, { credentials: 'same-origin' });
+  if (!resp.ok) return;
+  const run = await resp.json();
+  currentRunId = run.id;
+
+  document.getElementById('listPanel').style.display = 'none';
+  document.getElementById('detail').style.display = 'block';
+  document.getElementById('detailTitle').textContent = `Run #${run.id}`;
+  const when = new Date(run.created_at).toLocaleString();
+  const roiText = run.roi ? `ROI ${run.roi.join(',')}` : 'full frame';
+  document.getElementById('detailMeta').textContent =
+    `${when} · by ${run.created_by} · ambient ${run.ambient_c ?? 'auto'} · min ΔT ${run.min_delta_c}°C · ${roiText}`;
+
+  const imagesEl = document.getElementById('detailImages');
+  imagesEl.innerHTML = '';
+  run.images.forEach((img) => {
+    const block = document.createElement('div');
+    block.className = 'image-block';
+    const rowsHtml = img.hotspots.length
+      ? `<table class="hotspots">
+          <thead><tr><th>Severity</th><th>ΔT (°C)</th><th>Max (°C)</th><th>Mean (°C)</th><th>Area (px)</th><th>BBox</th></tr></thead>
+          <tbody>
+            ${img.hotspots.map((h) => `
+              <tr>
+                <td>${h.severity}</td><td>${h.delta_t_c}</td><td>${h.max_temp_c}</td>
+                <td>${h.mean_temp_c}</td><td>${h.area_px}</td>
+                <td>${h.bbox_x}, ${h.bbox_y}, ${h.bbox_w}, ${h.bbox_h}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`
+      : `<p style="color: var(--muted); margin: 0.25rem 0 0;">No anomalies detected.</p>`;
+    block.innerHTML = `
+      <h3 style="margin-bottom:0.15rem;">${img.filename}</h3>
+      <p style="color: var(--muted); font-size: 0.85rem; margin: 0 0 0.5rem;">Ambient reference: ${img.ambient_c}°C</p>
+      <img src="${img.image_url}" alt="Annotated thermal image of ${img.filename}" />
+      ${rowsHtml}
+    `;
+    imagesEl.appendChild(block);
+  });
+
+  const skippedEl = document.getElementById('detailSkipped');
+  skippedEl.innerHTML = '';
+  if (run.skipped.length) {
+    skippedEl.innerHTML = '<b style="color: var(--text);">Skipped files</b><br>' +
+      run.skipped.map((s) => `<b>${s.filename}:</b> ${s.reason}`).join('<br>');
+  }
+}
+
+document.getElementById('backLink').addEventListener('click', (e) => {
+  e.preventDefault();
+  document.getElementById('detail').style.display = 'none';
+  document.getElementById('listPanel').style.display = 'block';
+  currentRunId = null;
+});
+
+document.getElementById('downloadBtn').addEventListener('click', async () => {
+  if (!currentRunId) return;
+  const btn = document.getElementById('downloadBtn');
+  const statusEl = document.getElementById('downloadStatus');
+  btn.disabled = true;
+  statusEl.textContent = 'Generating PDF…';
+
+  const form = new FormData();
+  form.append('report_style', document.getElementById('reportStyle').value);
+  ['clientName:client_name', 'siteLocation:site_location', 'auditDate:audit_date', 'inspectorName:inspector_name', 'reportId:report_id']
+    .forEach((pair) => {
+      const [elId, field] = pair.split(':');
+      const v = document.getElementById(elId).value;
+      if (v !== '') form.append(field, v);
+    });
+
+  try {
+    const resp = await fetch(`/api/history/${currentRunId}/report`, { method: 'POST', body: form, credentials: 'same-origin' });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      throw new Error(data.detail || 'Report generation failed');
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const disposition = resp.headers.get('Content-Disposition') || '';
+    const match = disposition.match(/filename="?([^"]+)"?/);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = match ? match[1] : 'thermal_report.pdf';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    statusEl.textContent = 'Downloaded.';
+  } catch (err) {
+    statusEl.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+loadRuns();
+</script>
+</body>
+</html>

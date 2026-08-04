@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Thermal Panel Inspector</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #0f1216;
+    --panel: #171b21;
+    --border: #2a2f37;
+    --text: #e6e9ee;
+    --muted: #9aa4b2;
+    --accent: #4da3ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 2rem 1.25rem 4rem;
+  }
+  main { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
+  p.subtitle { color: var(--muted); margin-top: 0; margin-bottom: 1.5rem; }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem;
+    margin-bottom: 1.25rem;
+  }
+
+  #dropzone {
+    border: 2px dashed var(--border);
+    border-radius: 10px;
+    padding: 2rem;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+  #dropzone.drag { border-color: var(--accent); }
+  #dropzone input { display: none; }
+  #fileSummary { color: var(--muted); margin-top: 0.5rem; font-size: 0.9rem; white-space: pre-line; }
+
+  .pick-links { margin-top: 0.6rem; font-size: 0.85rem; }
+  .pick-links a { color: var(--accent); text-decoration: none; cursor: pointer; }
+  .pick-links a:hover { text-decoration: underline; }
+  .pick-links .sep { color: var(--border); margin: 0 0.5rem; }
+
+  .fields {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-top: 1rem;
+  }
+  .fields label {
+    display: flex;
+    flex-direction: column;
+    font-size: 0.85rem;
+    color: var(--muted);
+    gap: 0.25rem;
+  }
+  .fields input, .fields select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 0.4rem 0.5rem;
+    width: 9rem;
+  }
+  .fields input.wide { width: 14rem; }
+
+  .section-label {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    margin: 1.25rem 0 0.25rem;
+  }
+  .section-label:first-child { margin-top: 0; }
+
+  button {
+    margin-top: 1rem;
+    background: var(--accent);
+    color: #04121f;
+    border: none;
+    border-radius: 6px;
+    padding: 0.6rem 1.2rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.secondary {
+    background: transparent;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    margin-left: 0.75rem;
+  }
+
+  #status { color: var(--muted); margin-top: 0.75rem; font-size: 0.9rem; }
+  #status.error { color: #ff6b6b; }
+
+  #results { display: none; }
+  .image-block img { max-width: 100%; border-radius: 8px; border: 1px solid var(--border); }
+  .image-block { margin-bottom: 1.75rem; }
+  .image-block h3 { margin-bottom: 0.15rem; }
+  .image-meta { color: var(--muted); font-size: 0.85rem; margin: 0 0 0.5rem; }
+
+  .summary-badges { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 0.75rem 0 1rem; }
+  .badge {
+    padding: 0.3rem 0.7rem;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 600;
+  }
+  .badge.minor { background: #4a4200; color: #ffe97a; }
+  .badge.serious { background: #5a3200; color: #ffb45c; }
+  .badge.critical { background: #5a0000; color: #ff7a7a; }
+  .badge.critical_immediate { background: #4a0044; color: #ff7aff; }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; font-size: 0.85rem; }
+  th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; }
+
+  #skippedBlock { margin-top: 1rem; font-size: 0.85rem; color: var(--muted); }
+  #skippedBlock b { color: var(--text); }
+
+  .topbar {
+    max-width: 900px;
+    margin: 0 auto 1.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .topbar .brand { color: var(--text); text-decoration: none; font-weight: 700; }
+  .topbar nav { display: flex; align-items: center; gap: 1rem; font-size: 0.9rem; }
+  .topbar nav a { color: var(--muted); text-decoration: none; }
+  .topbar nav a:hover { color: var(--text); }
+  .topbar .whoami { color: var(--muted); font-size: 0.85rem; }
+  .topbar button.secondary { margin: 0; padding: 0.35rem 0.8rem; font-size: 0.85rem; }
+
+  #viewerNotice { display: none; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a href="/" class="brand">Thermal Panel Inspector</a>
+  <nav>
+    <a href="/">Analyze</a>
+    <a href="/history">History</a>
+    <a href="/admin" id="adminLink" style="display:none;">Admin</a>
+    <span class="whoami" id="whoami"></span>
+    <button id="logoutBtn" class="secondary">Log out</button>
+  </nav>
+</header>
+<main>
+  <h1>Thermal Panel Inspector</h1>
+  <p class="subtitle">Upload one or more radiometric FLIR JPEGs (or a whole folder) of electrical panels to detect and classify thermal anomalies.</p>
+
+  <div class="panel" id="viewerNotice">
+    Your account has view-only access. You can browse and download past reports from <a href="/history" style="color: var(--accent);">History</a>,
+    but running a new analysis requires the inspector or admin role.
+  </div>
+
+  <div class="panel" id="uploadPanel">
+    <div id="dropzone">
+      <div>Drag radiometric FLIR JPEGs here, or click to choose files</div>
+      <div id="fileSummary">No files selected</div>
+      <input type="file" id="fileInput" accept=".jpg,.jpeg" multiple />
+      <input type="file" id="folderInput" webkitdirectory multiple />
+    </div>
+    <div class="pick-links">
+      <a id="chooseFilesLink">Choose files</a><span class="sep">|</span><a id="chooseFolderLink">Choose folder</a>
+    </div>
+
+    <div class="fields">
+      <label>Ambient °C (optional)
+        <input type="number" id="ambient" step="0.1" placeholder="auto" />
+      </label>
+      <label>Min ΔT °C
+        <input type="number" id="minDelta" step="0.5" value="8" />
+      </label>
+      <label>Min area (px)
+        <input type="number" id="minArea" step="1" value="25" />
+      </label>
+    </div>
+
+    <div class="fields">
+      <label>ROI x (optional)
+        <input type="number" id="roiX" step="1" placeholder="full frame" />
+      </label>
+      <label>ROI y
+        <input type="number" id="roiY" step="1" placeholder="full frame" />
+      </label>
+      <label>ROI width
+        <input type="number" id="roiW" step="1" placeholder="full frame" />
+      </label>
+      <label>ROI height
+        <input type="number" id="roiH" step="1" placeholder="full frame" />
+      </label>
+    </div>
+    <div id="roiHint" style="color: var(--muted); font-size: 0.8rem; margin-top: 0.35rem;">
+      Optional: crop analysis to the panel enclosure to exclude background (walls, open doors).
+      Leave all four blank to search the whole frame. Applied to every file if more than one is
+      selected, so only use it when they share the same framing. Run once first to see image dimensions.
+    </div>
+
+    <div class="section-label">Report details (for PDF export)</div>
+    <div class="fields">
+      <label>Client name
+        <input type="text" id="clientName" class="wide" placeholder="optional" />
+      </label>
+      <label>Site / location
+        <input type="text" id="siteLocation" class="wide" placeholder="optional" />
+      </label>
+      <label>Audit date
+        <input type="date" id="auditDate" />
+      </label>
+      <label>Inspector
+        <input type="text" id="inspectorName" placeholder="optional" />
+      </label>
+      <label>Report ID
+        <input type="text" id="reportId" placeholder="optional" />
+      </label>
+      <label>Report style
+        <select id="reportStyle">
+          <option value="full">Full (all detail)</option>
+          <option value="audit">Audit (findings only)</option>
+        </select>
+      </label>
+    </div>
+
+    <button id="analyzeBtn" disabled>Analyze</button>
+    <div id="status"></div>
+  </div>
+
+  <div class="panel" id="results">
+    <h2 style="margin-top:0;">Results</h2>
+    <div class="summary-badges" id="badges"></div>
+    <div id="imageResults"></div>
+    <div id="skippedBlock"></div>
+    <button id="downloadBtn" class="secondary">Download PDF</button>
+    <span id="downloadStatus" style="color: var(--muted); font-size: 0.85rem; margin-left: 0.5rem;"></span>
+  </div>
+</main>
+
+<script>
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+const folderInput = document.getElementById('folderInput');
+const fileSummaryEl = document.getElementById('fileSummary');
+const analyzeBtn = document.getElementById('analyzeBtn');
+const statusEl = document.getElementById('status');
+const resultsEl = document.getElementById('results');
+const badgesEl = document.getElementById('badges');
+const imageResultsEl = document.getElementById('imageResults');
+const skippedBlockEl = document.getElementById('skippedBlock');
+const downloadBtn = document.getElementById('downloadBtn');
+const downloadStatusEl = document.getElementById('downloadStatus');
+
+const JPEG_RE = /\.jpe?g$/i;
+let selectedFiles = [];
+let currentRunId = null;
+
+document.getElementById('logoutBtn').addEventListener('click', async () => {
+  await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
+  window.location.href = '/login';
+});
+
+(async function initUser() {
+  const resp = await fetch('/api/me', { credentials: 'same-origin' });
+  if (!resp.ok) {
+    window.location.href = '/login';
+    return;
+  }
+  const me = await resp.json();
+  document.getElementById('whoami').textContent = `${me.username} (${me.role})`;
+  if (me.role === 'admin') document.getElementById('adminLink').style.display = '';
+  if (me.role === 'viewer') {
+    document.getElementById('viewerNotice').style.display = 'block';
+    document.getElementById('uploadPanel').style.display = 'none';
+  }
+})();
+
+function setFiles(fileList) {
+  const all = Array.from(fileList);
+  const jpegs = all.filter((f) => JPEG_RE.test(f.name));
+  selectedFiles = jpegs;
+
+  if (jpegs.length === 0) {
+    fileSummaryEl.textContent = all.length ? 'No .jpg/.jpeg files found in selection' : 'No files selected';
+    analyzeBtn.disabled = true;
+    return;
+  }
+
+  const skippedCount = all.length - jpegs.length;
+  let summary = jpegs.length === 1 ? jpegs[0].name : `${jpegs.length} files selected`;
+  if (jpegs.length > 1 && jpegs.length <= 6) {
+    summary += '\n' + jpegs.map((f) => f.name).join(', ');
+  }
+  if (skippedCount > 0) {
+    summary += `\n(${skippedCount} non-JPEG file${skippedCount === 1 ? '' : 's'} ignored)`;
+  }
+  fileSummaryEl.textContent = summary;
+  analyzeBtn.disabled = false;
+}
+
+// Returns a FormData with files/ambient/min_delta/min_area/roi, or null (with
+// an error already shown in statusEl) if the ROI fields are only partly filled.
+function buildAnalysisFormData() {
+  const form = new FormData();
+  selectedFiles.forEach((f) => form.append('files', f));
+  const ambient = document.getElementById('ambient').value;
+  if (ambient !== '') form.append('ambient', ambient);
+  form.append('min_delta', document.getElementById('minDelta').value || '8');
+  form.append('min_area', document.getElementById('minArea').value || '25');
+
+  const roiX = document.getElementById('roiX').value;
+  const roiY = document.getElementById('roiY').value;
+  const roiW = document.getElementById('roiW').value;
+  const roiH = document.getElementById('roiH').value;
+  const roiFilled = [roiX, roiY, roiW, roiH].filter((v) => v !== '').length;
+  if (roiFilled > 0 && roiFilled < 4) {
+    statusEl.textContent = 'ROI x/y/width/height must all be set together, or all left blank.';
+    statusEl.className = 'error';
+    return null;
+  }
+  if (roiFilled === 4) {
+    form.append('roi_x', roiX);
+    form.append('roi_y', roiY);
+    form.append('roi_w', roiW);
+    form.append('roi_h', roiH);
+  }
+  return form;
+}
+
+document.getElementById('chooseFilesLink').addEventListener('click', () => fileInput.click());
+document.getElementById('chooseFolderLink').addEventListener('click', () => folderInput.click());
+dropzone.addEventListener('click', (e) => {
+  if (e.target.closest('.pick-links')) return;
+  fileInput.click();
+});
+dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('drag'); });
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag'));
+dropzone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropzone.classList.remove('drag');
+  if (e.dataTransfer.files.length) setFiles(e.dataTransfer.files);
+});
+fileInput.addEventListener('change', () => {
+  if (fileInput.files.length) setFiles(fileInput.files);
+});
+folderInput.addEventListener('change', () => {
+  if (folderInput.files.length) setFiles(folderInput.files);
+});
+
+analyzeBtn.addEventListener('click', async () => {
+  if (!selectedFiles.length) return;
+
+  analyzeBtn.disabled = true;
+  statusEl.textContent = selectedFiles.length > 1 ? 'Analyzing files…' : 'Analyzing…';
+  statusEl.className = '';
+  resultsEl.style.display = 'none';
+
+  const form = buildAnalysisFormData();
+  if (!form) {
+    analyzeBtn.disabled = false;
+    return;
+  }
+
+  try {
+    const resp = await fetch('/api/analyze', { method: 'POST', body: form, credentials: 'same-origin' });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'Analysis failed');
+    currentRunId = data.run_id;
+    renderResults(data);
+    const okCount = data.results.length;
+    const skipCount = data.skipped.length;
+    statusEl.textContent = skipCount
+      ? `Done — ${okCount} analyzed, ${skipCount} skipped.`
+      : `Done — ${okCount} image${okCount === 1 ? '' : 's'} analyzed.`;
+    if (data.results.length) {
+      const first = data.results[0];
+      document.getElementById('roiHint').textContent =
+        `First image is ${first.image_width}×${first.image_height}px. Optional: crop analysis to the panel ` +
+        `enclosure to exclude background. Leave all four blank to search the whole frame.`;
+    }
+  } catch (err) {
+    statusEl.textContent = err.message;
+    statusEl.className = 'error';
+  } finally {
+    analyzeBtn.disabled = false;
+  }
+});
+
+downloadBtn.addEventListener('click', async () => {
+  if (!currentRunId) return;
+
+  downloadBtn.disabled = true;
+  downloadStatusEl.textContent = 'Generating PDF…';
+
+  const form = new FormData();
+  form.append('report_style', document.getElementById('reportStyle').value);
+  const clientName = document.getElementById('clientName').value;
+  if (clientName !== '') form.append('client_name', clientName);
+  const siteLocation = document.getElementById('siteLocation').value;
+  if (siteLocation !== '') form.append('site_location', siteLocation);
+  const auditDate = document.getElementById('auditDate').value;
+  if (auditDate !== '') form.append('audit_date', auditDate);
+  const inspectorName = document.getElementById('inspectorName').value;
+  if (inspectorName !== '') form.append('inspector_name', inspectorName);
+  const reportId = document.getElementById('reportId').value;
+  if (reportId !== '') form.append('report_id', reportId);
+
+  try {
+    const resp = await fetch(`/api/history/${currentRunId}/report`, { method: 'POST', body: form, credentials: 'same-origin' });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      throw new Error(data.detail || 'Report generation failed');
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const disposition = resp.headers.get('Content-Disposition') || '';
+    const match = disposition.match(/filename="?([^"]+)"?/);
+    const downloadName = match ? match[1] : 'thermal_report.pdf';
+
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = downloadName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    downloadStatusEl.textContent = 'Downloaded.';
+  } catch (err) {
+    downloadStatusEl.textContent = err.message;
+  } finally {
+    downloadBtn.disabled = false;
+  }
+});
+
+function renderBadges(summary) {
+  badgesEl.innerHTML = '';
+  const counts = summary.counts_by_severity || {};
+  const order = ['critical_immediate', 'critical', 'serious', 'minor'];
+  order.forEach((sev) => {
+    if (counts[sev]) {
+      const span = document.createElement('span');
+      span.className = 'badge ' + sev;
+      span.textContent = `${sev.replace('_', ' ')}: ${counts[sev]}`;
+      badgesEl.appendChild(span);
+    }
+  });
+  if (summary.total_hotspots === 0) {
+    const span = document.createElement('span');
+    span.className = 'badge minor';
+    span.textContent = 'No anomalies detected';
+    badgesEl.appendChild(span);
+  }
+}
+
+function renderResults(data) {
+  renderBadges(data.summary);
+
+  imageResultsEl.innerHTML = '';
+  data.results.forEach((r) => {
+    const block = document.createElement('div');
+    block.className = 'image-block';
+
+    const rowsHtml = r.hotspots.length
+      ? `<table>
+          <thead><tr><th>Severity</th><th>ΔT (°C)</th><th>Max (°C)</th><th>Mean (°C)</th><th>Area (px)</th><th>BBox (x,y,w,h)</th></tr></thead>
+          <tbody>
+            ${r.hotspots.map((h) => `
+              <tr>
+                <td>${h.severity}</td>
+                <td>${h.delta_t_c}</td>
+                <td>${h.max_temp_c}</td>
+                <td>${h.mean_temp_c}</td>
+                <td>${h.area_px}</td>
+                <td>${h.bbox_x}, ${h.bbox_y}, ${h.bbox_w}, ${h.bbox_h}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`
+      : `<p style="color: var(--muted); margin: 0.25rem 0 0;">No anomalies detected.</p>`;
+
+    block.innerHTML = `
+      <h3>${r.filename}</h3>
+      <p class="image-meta">Ambient reference: ${r.ambient_c}°C</p>
+      <img src="data:image/png;base64,${r.annotated_image_png_base64}" alt="Annotated thermal image of ${r.filename}" />
+      ${rowsHtml}
+    `;
+    imageResultsEl.appendChild(block);
+  });
+
+  skippedBlockEl.innerHTML = '';
+  if (data.skipped.length) {
+    const heading = document.createElement('div');
+    heading.innerHTML = '<b>Skipped files</b>';
+    skippedBlockEl.appendChild(heading);
+    data.skipped.forEach((s) => {
+      const line = document.createElement('div');
+      line.innerHTML = `<b>${s.filename}:</b> ${s.reason}`;
+      skippedBlockEl.appendChild(line);
+    });
+  }
+
+  resultsEl.style.display = 'block';
+}
+</script>
+</body>
+</html>

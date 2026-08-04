@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+thermal_report/
+webapp/data/
+.env
+reports/
