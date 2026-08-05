@@ -34,11 +34,19 @@ SEVERITY_ROW_COLORS = {
     "critical": colors.HexColor("#FFDADA"),
     "critical_immediate": colors.HexColor("#FADAFF"),
 }
-SEVERITY_GUIDANCE = {
-    "critical_immediate": "this indicates an imminent failure risk and should be repaired immediately",
-    "critical": "this represents a major discrepancy and should be repaired as soon as possible",
-    "serious": "this indicates a probable deficiency and should be scheduled for repair",
-    "minor": "this indicates a possible deficiency worth monitoring",
+SEVERITY_CONSEQUENCE = {
+    "critical_immediate": "an imminent risk of component failure, and a potential safety hazard",
+    "critical": "a high risk of accelerated damage and unplanned equipment failure",
+    "serious": "a developing fault that will likely worsen without intervention",
+    "minor": "an early-stage deviation worth tracking before it develops into a larger issue",
+}
+SEVERITY_ACTION = {
+    "critical_immediate": (
+        "we recommend the affected component be de-energized and repaired without delay"
+    ),
+    "critical": "we recommend corrective action as soon as possible, ideally within days",
+    "serious": "we recommend corrective action be scheduled in the near term",
+    "minor": "we recommend continued monitoring, with corrective action planned if the condition persists or worsens",
 }
 
 
@@ -127,17 +135,21 @@ def _narrative_summary(all_rows: list[dict]) -> str:
     )
 
     worst = max(all_rows, key=lambda r: r["delta_t_c"])
-    worst_guidance = SEVERITY_GUIDANCE[worst["severity"]]
+    worst_consequence = SEVERITY_CONSEQUENCE[worst["severity"]]
+    worst_action = SEVERITY_ACTION[worst["severity"]]
 
     sentences = [
-        f"This inspection identified {total} thermal anomal{'y' if total == 1 else 'ies'} ({breakdown}).",
-        f"The most significant finding is on {worst['image']}, with a temperature rise of "
-        f"{worst['delta_t_c']:.1f}°C above ambient (peak {worst['max_temp_c']:.1f}°C); "
-        f"{worst_guidance}.",
+        f"This inspection identified {total} thermal anomal{'y' if total == 1 else 'ies'} ({breakdown}). "
+        "Elevated temperatures at electrical connections and components are a leading indicator of "
+        "developing faults - loose or corroded connections, overloaded circuits, or degrading hardware "
+        "- and typically worsen over time if left unaddressed.",
+        f"The most significant finding, on {worst['image']}, shows a {worst['delta_t_c']:.1f}°C rise "
+        f"above ambient (peak {worst['max_temp_c']:.1f}°C), consistent with {worst_consequence}. "
+        f"{worst_action[0].upper()}{worst_action[1:]}.",
     ]
     if total > 1:
         sentences.append(
-            "Remaining findings are detailed below, along with their severity and recommended action."
+            "Additional findings are detailed below, each with its own severity and recommended action."
         )
     return " ".join(sentences)
 
@@ -160,20 +172,23 @@ def generate_audit_findings_report(
     excluded: list[tuple[str, str]] | None = None,
     metadata: ReportMetadata | None = None,
 ) -> Path:
-    """Write an audit-style PDF listing only thermal findings, with no
-    methodology or interpretation narrative.
+    """Write a clean, client-facing audit PDF listing only thermal findings -
+    no methodology/interpretation narrative, no per-image list of clean
+    results, no appendix of files excluded from review. Just the summary
+    counts, a persuasive plain-English narrative, and the findings themselves.
 
     Each entry's hotspot_rows should already reflect reviewed judgment —
     e.g. regions assessed as camera artifacts (reflections, objects in frame)
     should be excluded from hotspot_rows before calling this, not included
     with a caveat. entries.note is ignored by this report; use
-    generate_pdf_report if you need to record that kind of narrative.
+    generate_pdf_report if you need the fuller investigation-record version
+    (every image individually, clean or not, plus a skipped-files appendix).
 
-    An entry with empty hotspot_rows is listed as having no findings.
-    excluded is an optional list of (filename, reason) for files that were
-    not part of the review (e.g. not radiometric), listed in a short
-    appendix so the review scope is auditable. metadata, if given, renders a
-    client/site/date/inspector header block under the title.
+    excluded is accepted for API symmetry with generate_pdf_report but not
+    rendered here - clean images and skipped files are omitted entirely
+    rather than listed, to keep this report focused for a client audience.
+    metadata, if given, renders a client/site/date/inspector header block
+    under the title.
     """
     out_path = Path(out_path)
     styles = getSampleStyleSheet()
@@ -191,7 +206,6 @@ def generate_audit_findings_report(
     story.append(Spacer(1, 0.2 * inch))
 
     findings_entries = [e for e in entries if e.hotspot_rows]
-    clean_entries = [e for e in entries if not e.hotspot_rows]
 
     counts: dict[str, int] = {}
     for e in findings_entries:
@@ -234,17 +248,6 @@ def generate_audit_findings_report(
             ]
             story.append(_hotspot_table(rows_with_location, columns))
             story.append(Spacer(1, 0.35 * inch))
-
-    if clean_entries:
-        story.append(Paragraph("No Findings", styles["Heading2"]))
-        for e in clean_entries:
-            story.append(Paragraph(f"{e.image_name}: No thermal issues identified.", styles["Normal"]))
-        story.append(Spacer(1, 0.2 * inch))
-
-    if excluded:
-        story.append(Paragraph("Excluded From Review", styles["Heading2"]))
-        for name, reason in excluded:
-            story.append(Paragraph(f"<b>{name}:</b> {reason}", styles["Normal"]))
 
     doc.build(story)
     return out_path
