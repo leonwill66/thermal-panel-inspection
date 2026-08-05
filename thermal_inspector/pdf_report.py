@@ -34,6 +34,12 @@ SEVERITY_ROW_COLORS = {
     "critical": colors.HexColor("#FFDADA"),
     "critical_immediate": colors.HexColor("#FADAFF"),
 }
+SEVERITY_GUIDANCE = {
+    "critical_immediate": "this indicates an imminent failure risk and should be repaired immediately",
+    "critical": "this represents a major discrepancy and should be repaired as soon as possible",
+    "serious": "this indicates a probable deficiency and should be scheduled for repair",
+    "minor": "this indicates a possible deficiency worth monitoring",
+}
 
 
 @dataclass
@@ -98,6 +104,42 @@ def _hotspot_table(rows: list[dict], columns: list[tuple[str, str]]) -> Table:
         style_cmds.append(("BACKGROUND", (0, i), (-1, i), c))
     table.setStyle(TableStyle(style_cmds))
     return table
+
+
+def _narrative_summary(all_rows: list[dict]) -> str:
+    """A short plain-English paragraph summarizing the findings, for readers
+    who want the takeaway without parsing the technical tables. all_rows is
+    every hotspot row across every image (each already carries an "image"
+    key, per thermal_inspector.report.hotspots_to_rows)."""
+    if not all_rows:
+        return (
+            "No thermal anomalies were identified in this inspection. All panels "
+            "reviewed appear to be operating within normal thermal parameters."
+        )
+
+    counts: dict[str, int] = {}
+    for row in all_rows:
+        counts[row["severity"]] = counts.get(row["severity"], 0) + 1
+    total = len(all_rows)
+
+    breakdown = ", ".join(
+        f"{counts[sev]} {sev.replace('_', ' ')}" for sev in SEVERITY_ORDER if counts.get(sev)
+    )
+
+    worst = max(all_rows, key=lambda r: r["delta_t_c"])
+    worst_guidance = SEVERITY_GUIDANCE[worst["severity"]]
+
+    sentences = [
+        f"This inspection identified {total} thermal anomal{'y' if total == 1 else 'ies'} ({breakdown}).",
+        f"The most significant finding is on {worst['image']}, with a temperature rise of "
+        f"{worst['delta_t_c']:.1f}°C above ambient (peak {worst['max_temp_c']:.1f}°C); "
+        f"{worst_guidance}.",
+    ]
+    if total > 1:
+        sentences.append(
+            "Remaining findings are detailed below, along with their severity and recommended action."
+        )
+    return " ".join(sentences)
 
 
 def _report_image(annotated_image: Path | bytes, display_width_in: float = 4.0) -> RLImage:
@@ -165,6 +207,10 @@ def generate_audit_findings_report(
     for sev in SEVERITY_ORDER:
         if counts.get(sev):
             story.append(Paragraph(f"&nbsp;&nbsp;{SEVERITY_LABELS[sev]}: {counts[sev]}", styles["Normal"]))
+    story.append(Spacer(1, 0.15 * inch))
+
+    all_rows = [row for e in findings_entries for row in e.hotspot_rows]
+    story.append(Paragraph(_narrative_summary(all_rows), styles["Normal"]))
     story.append(Spacer(1, 0.3 * inch))
 
     columns = [
@@ -249,6 +295,10 @@ def generate_pdf_report(
     for sev in SEVERITY_ORDER:
         if counts.get(sev):
             story.append(Paragraph(f"&nbsp;&nbsp;{SEVERITY_LABELS[sev]}: {counts[sev]}", styles["Normal"]))
+    story.append(Spacer(1, 0.15 * inch))
+
+    all_rows = [row for e in entries for row in e.hotspot_rows]
+    story.append(Paragraph(_narrative_summary(all_rows), styles["Normal"]))
     story.append(Spacer(1, 0.3 * inch))
 
     columns = [
