@@ -17,9 +17,34 @@ import os
 
 from .db import RUNS_DIR
 
-_SUPABASE_URL = os.environ.get("SUPABASE_URL")
-_SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
-_BUCKET = os.environ.get("SUPABASE_STORAGE_BUCKET", "thermal-images")
+
+def _clean_env(name: str) -> str | None:
+    """Reads and validates an env var used as an HTTP header value later
+    (Supabase's client puts these straight into request headers). Strips
+    incidental whitespace and fails loudly and immediately if the value
+    contains non-ASCII characters - e.g. from a mangled copy-paste into a
+    hosting provider's dashboard - rather than letting it surface as an
+    opaque UnicodeEncodeError deep inside httpx on the first real request."""
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    try:
+        value.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise RuntimeError(
+            f"{name} contains non-ASCII characters (likely corrupted during copy/paste "
+            f"into your hosting provider's env var settings) - re-copy it fresh from "
+            f"Supabase and re-set it. Original error: {exc}"
+        ) from exc
+    return value
+
+
+_SUPABASE_URL = _clean_env("SUPABASE_URL")
+_SUPABASE_SERVICE_KEY = _clean_env("SUPABASE_SERVICE_KEY")
+_BUCKET = _clean_env("SUPABASE_STORAGE_BUCKET") or "thermal-images"
 
 _client = None
 if _SUPABASE_URL and _SUPABASE_SERVICE_KEY:
