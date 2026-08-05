@@ -170,7 +170,7 @@
 
   <div class="panel" id="uploadPanel">
     <div id="dropzone">
-      <div>Drag radiometric FLIR JPEGs here, or click to choose files</div>
+      <div>Drag radiometric FLIR JPEGs (or a whole folder) here, or click to choose files</div>
       <div id="fileSummary">No files selected</div>
       <input type="file" id="fileInput" accept=".jpg,.jpeg" multiple />
       <input type="file" id="folderInput" webkitdirectory multiple />
@@ -364,10 +364,51 @@ dropzone.addEventListener('click', (e) => {
 });
 dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('drag'); });
 dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag'));
-dropzone.addEventListener('drop', (e) => {
+// Recursively reads a dropped folder's contents. Uses the DataTransferItem
+// filesystem API rather than the <input webkitdirectory> dialog - a separate
+// browser code path that doesn't depend on the OS folder-picker dialog
+// working correctly (which isn't reliable in every Chrome/Windows setup).
+async function readAllDirectoryEntries(directoryReader) {
+  let allEntries = [];
+  let batch = await new Promise((resolve, reject) => directoryReader.readEntries(resolve, reject));
+  // readEntries() doesn't guarantee returning everything in one call - keep
+  // calling until it reports an empty batch.
+  while (batch.length > 0) {
+    allEntries = allEntries.concat(batch);
+    batch = await new Promise((resolve, reject) => directoryReader.readEntries(resolve, reject));
+  }
+  return allEntries;
+}
+
+async function traverseEntry(entry, collected) {
+  if (entry.isFile) {
+    const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+    collected.push(file);
+  } else if (entry.isDirectory) {
+    const entries = await readAllDirectoryEntries(entry.createReader());
+    for (const child of entries) {
+      await traverseEntry(child, collected);
+    }
+  }
+}
+
+dropzone.addEventListener('drop', async (e) => {
   e.preventDefault();
   dropzone.classList.remove('drag');
-  if (e.dataTransfer.files.length) setFiles(e.dataTransfer.files);
+
+  const items = e.dataTransfer.items ? Array.from(e.dataTransfer.items) : [];
+  const entries = items.map((item) => (item.webkitGetAsEntry ? item.webkitGetAsEntry() : null)).filter(Boolean);
+
+  if (entries.length > 0 && entries.some((entry) => entry.isDirectory)) {
+    fileSummaryEl.textContent = 'Reading folder…';
+    const collected = [];
+    for (const entry of entries) {
+      await traverseEntry(entry, collected);
+    }
+    setFiles(collected);
+  } else if (e.dataTransfer.files.length) {
+    setFiles(e.dataTransfer.files);
+  }
 });
 fileInput.addEventListener('change', () => {
   if (fileInput.files.length) setFiles(fileInput.files);
