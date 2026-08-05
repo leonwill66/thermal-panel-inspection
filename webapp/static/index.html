@@ -176,7 +176,7 @@
       <input type="file" id="folderInput" webkitdirectory multiple />
     </div>
     <div class="pick-links">
-      <a id="chooseFilesLink">Choose files</a><span class="sep">|</span><a id="chooseFolderLink">Choose folder</a>
+      <a id="chooseFilesLink">Choose files</a><span class="sep">|</span><a id="chooseFolderLink">Choose folder</a><span class="sep">|</span><a id="clearSelectionLink">Clear</a>
     </div>
 
     <div class="fields">
@@ -311,6 +311,21 @@ function setFiles(fileList) {
   analyzeBtn.disabled = false;
 }
 
+function clearSelection() {
+  selectedFiles = [];
+  currentRunId = null;
+  // Reset the inputs' values too, not just our JS state - otherwise
+  // reselecting the exact same file(s)/folder afterward wouldn't fire a
+  // 'change' event, since the browser sees no change in the input's value.
+  fileInput.value = '';
+  folderInput.value = '';
+  fileSummaryEl.textContent = 'No files selected';
+  analyzeBtn.disabled = true;
+  statusEl.textContent = '';
+  statusEl.className = '';
+  resultsEl.style.display = 'none';
+}
+
 // Returns a FormData with files/ambient/min_delta/min_area/roi, or null (with
 // an error already shown in statusEl) if the ROI fields are only partly filled.
 function buildAnalysisFormData() {
@@ -342,6 +357,7 @@ function buildAnalysisFormData() {
 
 document.getElementById('chooseFilesLink').addEventListener('click', () => fileInput.click());
 document.getElementById('chooseFolderLink').addEventListener('click', () => folderInput.click());
+document.getElementById('clearSelectionLink').addEventListener('click', clearSelection);
 dropzone.addEventListener('click', (e) => {
   if (e.target.closest('.pick-links')) return;
   fileInput.click();
