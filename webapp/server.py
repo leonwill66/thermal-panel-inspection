@@ -42,7 +42,8 @@ from thermal_inspector import (
     generate_pdf_report,
     load_radiometric,
 )
-from thermal_inspector.report import hotspots_to_rows, summarize
+from thermal_inspector.core import find_comparative_anomalies
+from thermal_inspector.report import comparative_to_rows, hotspots_to_rows, summarize
 
 from . import storage
 from .auth import get_current_user, get_session_secret, get_user_from_session, hash_password, require_role, verify_password
@@ -121,7 +122,7 @@ async def _save_upload(file: UploadFile, dest_dir: Path, index: int) -> Path:
     return dest_path
 
 
-def _detect(upload_path: Path, ambient, min_delta, min_area, roi):
+def _detect(upload_path: Path, ambient, min_delta, min_area, roi, load_percent=None):
     try:
         thermogram = load_radiometric(upload_path)
     except (FileNotFoundError, ValueError) as exc:
@@ -134,11 +135,38 @@ def _detect(upload_path: Path, ambient, min_delta, min_area, roi):
             min_delta_c=min_delta,
             min_area_px=min_area,
             roi=roi,
+            load_percent=load_percent,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
     return thermogram, hotspots, ambient_used
+
+
+def _parse_compare_regions(raw: str | None) -> list[tuple[tuple[int, int, int, int], str]] | None:
+    """raw is a JSON string like [[[x,y,w,h],"label"], ...] from the frontend
+    (or a CLI-style caller could build the same shape directly). Returns None
+    if raw is empty/absent - comparative analysis is then simply skipped."""
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail=f"compare_regions is not valid JSON: {exc}")
+
+    if not isinstance(parsed, list) or len(parsed) < 2:
+        raise HTTPException(status_code=422, detail="compare_regions needs at least 2 regions")
+
+    regions = []
+    for item in parsed:
+        try:
+            (x, y, w, h), label = item
+            regions.append(((int(x), int(y), int(w), int(h)), str(label)))
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=422, detail=f"compare_regions entry must be [[x,y,w,h], label], got {item!r}"
+            )
+    return regions
 
 
 def _user_summary(u: User) -> dict:
@@ -242,15 +270,21 @@ async def analyze(
     roi_y: int | None = Form(None),
     roi_w: int | None = Form(None),
     roi_h: int | None = Form(None),
+    load_percent: float | None = Form(None),
+    compare_regions: str | None = Form(None),
     user: User = Depends(require_role("admin", "inspector")),
     db: Session = Depends(get_db),
 ):
     """Analyze one or more images with shared parameters, and save the run to
-    history. roi, if given, applies to every file — only sensible when they
-    share the same framing/resolution."""
+    history. roi and compare_regions, if given, apply to every file — only
+    sensible when they share the same framing/resolution. load_percent
+    severity-classifies each hotspot by its load-corrected delta-T instead
+    of the raw observed one (see core.load_adjusted_delta_t). compare_regions
+    is a JSON string [[[x,y,w,h],"label"], ...] with at least 2 entries."""
     if not files:
         raise HTTPException(status_code=422, detail="No files uploaded")
     roi = _resolve_roi(roi_x, roi_y, roi_w, roi_h)
+    regions = _parse_compare_regions(compare_regions)
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="thermal_analyze_"))
     try:
@@ -264,6 +298,7 @@ async def analyze(
             roi_y=roi_y,
             roi_w=roi_w,
             roi_h=roi_h,
+            load_percent=load_percent,
             summary_json="{}",
             skipped_json="[]",
         )
@@ -277,7 +312,9 @@ async def analyze(
             image_name = file.filename or f"upload_{i}.jpg"
             upload_path = await _save_upload(file, tmp_dir, i)
             try:
-                thermogram, hotspots, ambient_used = _detect(upload_path, ambient, min_delta, min_area, roi)
+                thermogram, hotspots, ambient_used = _detect(
+                    upload_path, ambient, min_delta, min_area, roi, load_percent=load_percent
+                )
             except HTTPException as exc:
                 skipped.append({"filename": image_name, "reason": str(exc.detail)})
                 continue
@@ -292,6 +329,11 @@ async def analyze(
             all_rows.extend(rows)
             height, width = thermogram.temperature_c.shape[:2]
 
+            comparative_rows = None
+            if regions:
+                comparative = find_comparative_anomalies(thermogram.temperature_c, regions)
+                comparative_rows = comparative_to_rows(image_name, comparative)
+
             stored_name = f"{i:04d}_{Path(image_name).name}"
             storage.save_image(f"{run.id}/{stored_name}", buf.tobytes())
             db.add(
@@ -301,6 +343,7 @@ async def analyze(
                     ambient_c=ambient_used,
                     hotspots_json=json.dumps(rows),
                     annotated_image_path=f"{run.id}/{stored_name}",
+                    comparative_json=json.dumps(comparative_rows) if comparative_rows is not None else None,
                 )
             )
 
@@ -311,6 +354,7 @@ async def analyze(
                     "image_width": width,
                     "image_height": height,
                     "hotspots": rows,
+                    "comparative": comparative_rows,
                     "annotated_image_png_base64": base64.b64encode(buf.tobytes()).decode("ascii"),
                 }
             )
@@ -360,6 +404,7 @@ def report_from_history(
                 annotated_image=image_bytes,
                 hotspot_rows=json.loads(img.hotspots_json),
                 ambient_c=img.ambient_c,
+                comparative_rows=json.loads(img.comparative_json) if img.comparative_json else None,
             )
         )
     if not entries:
@@ -422,6 +467,7 @@ def get_history_run(run_id: int, user: User = Depends(get_current_user), db: Ses
         "min_delta_c": run.min_delta_c,
         "min_area_px": run.min_area_px,
         "roi": [run.roi_x, run.roi_y, run.roi_w, run.roi_h] if run.roi_x is not None else None,
+        "load_percent": run.load_percent,
         "summary": json.loads(run.summary_json),
         "skipped": json.loads(run.skipped_json),
         "images": [
@@ -430,6 +476,7 @@ def get_history_run(run_id: int, user: User = Depends(get_current_user), db: Ses
                 "filename": img.filename,
                 "ambient_c": round(img.ambient_c, 2),
                 "hotspots": json.loads(img.hotspots_json),
+                "comparative": json.loads(img.comparative_json) if img.comparative_json else None,
                 "image_url": f"/api/history/{run.id}/image/{img.id}",
             }
             for img in run.images

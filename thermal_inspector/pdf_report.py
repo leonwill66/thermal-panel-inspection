@@ -49,6 +49,22 @@ SEVERITY_ACTION = {
     "minor": "we recommend continued monitoring, with corrective action planned if the condition persists or worsens",
 }
 
+COMPARATIVE_LABELS = {
+    "comparative_major": "Major discrepancy vs. peers - repair immediately",
+    "comparative_probable": "Probable deficiency vs. peers - repair as time permits",
+    "comparative_possible": "Possible deficiency vs. peers - investigate",
+}
+COMPARATIVE_ROW_COLORS = {
+    "comparative_possible": colors.HexColor("#FFF6DA"),
+    "comparative_probable": colors.HexColor("#FFE8D1"),
+    "comparative_major": colors.HexColor("#FFDADA"),
+}
+COMPARATIVE_ACTION = {
+    "comparative_major": "we recommend immediate repair - this component is running well outside the range of its peers",
+    "comparative_probable": "we recommend repair as time permits",
+    "comparative_possible": "we recommend investigating this component at the next opportunity",
+}
+
 
 @dataclass
 class ImageReportEntry:
@@ -57,6 +73,7 @@ class ImageReportEntry:
     hotspot_rows: list[dict]  # as produced by thermal_inspector.report.hotspots_to_rows
     ambient_c: float
     note: str | None = None
+    comparative_rows: list[dict] | None = None  # as produced by thermal_inspector.report.comparative_to_rows
 
 
 @dataclass
@@ -84,9 +101,12 @@ def _metadata_block(metadata: ReportMetadata | None, styles) -> list:
     return story
 
 
-def _hotspot_table(rows: list[dict], columns: list[tuple[str, str]]) -> Table:
+def _hotspot_table(rows: list[dict], columns: list[tuple[str, str]], row_colors_map=None) -> Table:
     """columns is a list of (row-dict key, header label); float values are
-    formatted to 1 decimal place, everything else is stringified as-is."""
+    formatted to 1 decimal place, None displays as "-", everything else is
+    stringified as-is. row_colors_map defaults to the ambient-referenced
+    SEVERITY_ROW_COLORS; pass COMPARATIVE_ROW_COLORS for comparative-method rows."""
+    row_colors_map = row_colors_map if row_colors_map is not None else SEVERITY_ROW_COLORS
     header = [label for _, label in columns]
     data = [header]
     row_colors = [colors.white]
@@ -94,9 +114,14 @@ def _hotspot_table(rows: list[dict], columns: list[tuple[str, str]]) -> Table:
         data_row = []
         for key, _ in columns:
             value = row[key]
-            data_row.append(f"{value:.1f}" if isinstance(value, float) else str(value))
+            if value is None:
+                data_row.append("-")
+            elif isinstance(value, float):
+                data_row.append(f"{value:.1f}")
+            else:
+                data_row.append(str(value))
         data.append(data_row)
-        row_colors.append(SEVERITY_ROW_COLORS.get(row["severity"], colors.white))
+        row_colors.append(row_colors_map.get(row["severity"], colors.white))
 
     table = Table(data, hAlign="LEFT")
     style_cmds = [
@@ -134,24 +159,68 @@ def _narrative_summary(all_rows: list[dict]) -> str:
         f"{counts[sev]} {sev.replace('_', ' ')}" for sev in SEVERITY_ORDER if counts.get(sev)
     )
 
-    worst = max(all_rows, key=lambda r: r["delta_t_c"])
+    def _rank(row: dict) -> float:
+        corrected = row.get("delta_t_corrected_c")
+        return corrected if corrected is not None else row["delta_t_c"]
+
+    worst = max(all_rows, key=_rank)
     worst_consequence = SEVERITY_CONSEQUENCE[worst["severity"]]
     worst_action = SEVERITY_ACTION[worst["severity"]]
+
+    if worst.get("delta_t_corrected_c") is not None:
+        finding_sentence = (
+            f"The most significant finding, on {worst['image']}, shows a temperature rise of "
+            f"{worst['delta_t_corrected_c']:.1f}°C above ambient when corrected to full load "
+            f"(observed {worst['delta_t_c']:.1f}°C at {worst['load_percent']:.0f}% load), consistent "
+            f"with {worst_consequence}. {worst_action[0].upper()}{worst_action[1:]}."
+        )
+    else:
+        finding_sentence = (
+            f"The most significant finding, on {worst['image']}, shows a {worst['delta_t_c']:.1f}°C rise "
+            f"above ambient (peak {worst['max_temp_c']:.1f}°C), consistent with {worst_consequence}. "
+            f"{worst_action[0].upper()}{worst_action[1:]}."
+        )
 
     sentences = [
         f"This inspection identified {total} thermal anomal{'y' if total == 1 else 'ies'} ({breakdown}). "
         "Elevated temperatures at electrical connections and components are a leading indicator of "
         "developing faults - loose or corroded connections, overloaded circuits, or degrading hardware "
         "- and typically worsen over time if left unaddressed.",
-        f"The most significant finding, on {worst['image']}, shows a {worst['delta_t_c']:.1f}°C rise "
-        f"above ambient (peak {worst['max_temp_c']:.1f}°C), consistent with {worst_consequence}. "
-        f"{worst_action[0].upper()}{worst_action[1:]}.",
+        finding_sentence,
     ]
     if total > 1:
         sentences.append(
             "Additional findings are detailed below, each with its own severity and recommended action."
         )
     return " ".join(sentences)
+
+
+def _comparative_narrative(all_comparative_rows: list[dict]) -> str | None:
+    """Short paragraph summarizing comparative-method findings specifically -
+    returns None if there's nothing to report (no rows, or none with a
+    severity, meaning every compared component was within normal range of
+    its peers)."""
+    flagged = [row for row in all_comparative_rows if row.get("severity")]
+    if not flagged:
+        return None
+
+    worst = max(flagged, key=lambda r: r["delta_t_c"])
+    worst_action = COMPARATIVE_ACTION[worst["severity"]]
+    label = worst.get("label") or "one component"
+
+    return (
+        f"Comparing corresponding components against each other (rather than against an "
+        f"estimated ambient) surfaced {len(flagged)} additional finding{'s' if len(flagged) != 1 else ''}: "
+        f"{label} on {worst['image']} runs {worst['delta_t_c']:.1f}°C hotter than its peers under "
+        f"similar load, which the ambient-referenced method alone may not flag as severe. "
+        f"{worst_action[0].upper()}{worst_action[1:]}."
+    )
+
+
+def _has_findings(entry: ImageReportEntry) -> bool:
+    if entry.hotspot_rows:
+        return True
+    return any(row.get("severity") for row in (entry.comparative_rows or []))
 
 
 def _report_image(annotated_image: Path | bytes, display_width_in: float = 4.0) -> RLImage:
@@ -205,7 +274,7 @@ def generate_audit_findings_report(
     story.extend(_metadata_block(metadata, styles))
     story.append(Spacer(1, 0.2 * inch))
 
-    findings_entries = [e for e in entries if e.hotspot_rows]
+    findings_entries = [e for e in entries if _has_findings(e)]
 
     counts: dict[str, int] = {}
     for e in findings_entries:
@@ -225,11 +294,24 @@ def generate_audit_findings_report(
 
     all_rows = [row for e in findings_entries for row in e.hotspot_rows]
     story.append(Paragraph(_narrative_summary(all_rows), styles["Normal"]))
+
+    all_comparative_rows = [row for e in entries for row in (e.comparative_rows or [])]
+    comparative_text = _comparative_narrative(all_comparative_rows)
+    if comparative_text:
+        story.append(Spacer(1, 0.1 * inch))
+        story.append(Paragraph(comparative_text, styles["Normal"]))
     story.append(Spacer(1, 0.3 * inch))
 
     columns = [
         ("severity", "Severity"),
         ("delta_t_c", "ΔT (°C)"),
+        ("max_temp_c", "Max Temp (°C)"),
+        ("bbox_location", "Location (px)"),
+    ]
+    comparative_columns = [
+        ("label", "Component"),
+        ("severity", "Severity"),
+        ("delta_t_c", "ΔT vs. Peers (°C)"),
         ("max_temp_c", "Max Temp (°C)"),
         ("bbox_location", "Location (px)"),
     ]
@@ -242,11 +324,23 @@ def generate_audit_findings_report(
             story.append(_report_image(entry.annotated_image))
             story.append(Spacer(1, 0.1 * inch))
 
-            rows_with_location = [
-                {**row, "bbox_location": f"{row['bbox_x']}, {row['bbox_y']}, {row['bbox_w']}, {row['bbox_h']}"}
-                for row in entry.hotspot_rows
-            ]
-            story.append(_hotspot_table(rows_with_location, columns))
+            if entry.hotspot_rows:
+                rows_with_location = [
+                    {**row, "bbox_location": f"{row['bbox_x']}, {row['bbox_y']}, {row['bbox_w']}, {row['bbox_h']}"}
+                    for row in entry.hotspot_rows
+                ]
+                story.append(_hotspot_table(rows_with_location, columns))
+
+            flagged_comparative = [row for row in (entry.comparative_rows or []) if row.get("severity")]
+            if flagged_comparative:
+                story.append(Spacer(1, 0.1 * inch))
+                story.append(Paragraph("Comparative findings", styles["Heading4"] if "Heading4" in styles else styles["Heading3"]))
+                comp_rows_with_location = [
+                    {**row, "bbox_location": f"{row['bbox_x']}, {row['bbox_y']}, {row['bbox_w']}, {row['bbox_h']}"}
+                    for row in flagged_comparative
+                ]
+                story.append(_hotspot_table(comp_rows_with_location, comparative_columns, row_colors_map=COMPARATIVE_ROW_COLORS))
+
             story.append(Spacer(1, 0.35 * inch))
 
     doc.build(story)
@@ -302,6 +396,12 @@ def generate_pdf_report(
 
     all_rows = [row for e in entries for row in e.hotspot_rows]
     story.append(Paragraph(_narrative_summary(all_rows), styles["Normal"]))
+
+    all_comparative_rows = [row for e in entries for row in (e.comparative_rows or [])]
+    comparative_text = _comparative_narrative(all_comparative_rows)
+    if comparative_text:
+        story.append(Spacer(1, 0.1 * inch))
+        story.append(Paragraph(comparative_text, styles["Normal"]))
     story.append(Spacer(1, 0.3 * inch))
 
     columns = [
@@ -311,6 +411,13 @@ def generate_pdf_report(
         ("mean_temp_c", "Mean (°C)"),
         ("area_px", "Area (px)"),
         ("bbox_location", "Location (x,y,w,h)"),
+    ]
+    comparative_columns = [
+        ("label", "Component"),
+        ("severity", "Severity"),
+        ("delta_t_c", "ΔT vs. Peers (°C)"),
+        ("max_temp_c", "Max Temp (°C)"),
+        ("bbox_location", "Location (px)"),
     ]
 
     for entry in entries:
@@ -328,6 +435,15 @@ def generate_pdf_report(
             story.append(_hotspot_table(rows_with_location, columns))
         else:
             story.append(Paragraph("No anomalies detected.", styles["Normal"]))
+
+        if entry.comparative_rows:
+            story.append(Spacer(1, 0.1 * inch))
+            story.append(Paragraph("Comparative findings", styles["Heading3"]))
+            comp_rows_with_location = [
+                {**row, "bbox_location": f"{row['bbox_x']}, {row['bbox_y']}, {row['bbox_w']}, {row['bbox_h']}"}
+                for row in entry.comparative_rows
+            ]
+            story.append(_hotspot_table(comp_rows_with_location, comparative_columns, row_colors_map=COMPARATIVE_ROW_COLORS))
 
         if entry.note:
             story.append(Spacer(1, 0.08 * inch))

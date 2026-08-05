@@ -89,6 +89,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--inspector", default=None, help="Inspector/auditor name, shown in the PDF report header")
     parser.add_argument("--report-id", default=None, help="Report ID/reference number, shown in the PDF report header")
+    parser.add_argument(
+        "--load-percent",
+        type=float,
+        default=None,
+        help="Equipment load at inspection time, as a percent of rated (e.g. 60 for 60%%). "
+        "When given, each hotspot's severity is classified by its temperature rise projected "
+        "to 100%% load (I^2R approximation) rather than the raw observed rise - a lightly "
+        "loaded fault can look deceptively mild otherwise. Unreliable much below 40%% load.",
+    )
+    parser.add_argument(
+        "--compare-region",
+        action="append",
+        default=None,
+        metavar="X,Y,W,H,LABEL",
+        help="Mark a component for the comparative method (e.g. one phase of a three-phase "
+        "breaker) - repeat for each corresponding component, need at least 2. Components are "
+        "compared against each other (coolest = reference) instead of against ambient, which "
+        "catches subtler faults and is less prone to background/reflection false positives. "
+        "Applied to every image if --input is a folder, so only sensible when they share "
+        "identical framing. Example: --compare-region 10,10,20,20,'Phase A'",
+    )
 
     args = parser.parse_args(argv)
 
@@ -109,6 +130,26 @@ def main(argv: list[str] | None = None) -> int:
             notes = json.loads(Path(args.notes_file).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             print(f"error: could not read --notes-file {args.notes_file!r}: {exc}", file=sys.stderr)
+            return 1
+
+    compare_regions = None
+    if args.compare_region:
+        compare_regions = []
+        for spec in args.compare_region:
+            parts = [p.strip() for p in spec.split(",")]
+            if len(parts) != 5:
+                print(
+                    f"error: --compare-region must be X,Y,W,H,LABEL, got {spec!r}", file=sys.stderr
+                )
+                return 1
+            try:
+                x, y, w, h = (int(p) for p in parts[:4])
+            except ValueError:
+                print(f"error: --compare-region X,Y,W,H must be integers, got {spec!r}", file=sys.stderr)
+                return 1
+            compare_regions.append(((x, y, w, h), parts[4]))
+        if len(compare_regions) < 2:
+            print("error: --compare-region needs at least 2 to compare", file=sys.stderr)
             return 1
 
     metadata = ReportMetadata(
@@ -133,6 +174,8 @@ def main(argv: list[str] | None = None) -> int:
             pdf_title=args.pdf_title,
             report_style=args.report_style,
             metadata=metadata,
+            load_percent=args.load_percent,
+            compare_regions=compare_regions,
         )
     except (FileNotFoundError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)

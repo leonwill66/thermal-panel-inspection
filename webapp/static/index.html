@@ -211,6 +211,27 @@
       selected, so only use it when they share the same framing. Run once first to see image dimensions.
     </div>
 
+    <div class="fields">
+      <label>Load % (optional)
+        <input type="number" id="loadPercent" step="1" min="1" placeholder="not corrected" />
+      </label>
+    </div>
+    <div id="loadHint" style="color: var(--muted); font-size: 0.8rem; margin-top: 0.35rem;">
+      Optional: equipment load at inspection time, as a percent of rated. When set, severity is
+      based on the temperature rise projected to 100% load (I&sup2;R approximation) rather than
+      the raw observed rise. Unreliable much below 40% load.
+    </div>
+
+    <label>Compare regions (optional)
+      <textarea id="compareRegions" class="wide" rows="3" placeholder="x,y,w,h,label (one per line, at least 2 - e.g. corresponding phases of a breaker)"></textarea>
+    </label>
+    <div id="compareHint" style="color: var(--muted); font-size: 0.8rem; margin-top: 0.35rem;">
+      Mark corresponding components (e.g. each phase of a three-phase breaker) to compare against
+      each other instead of ambient - catches subtler faults, less prone to background/reflection
+      false positives. Needs at least 2 lines. Applied to every file, so only use when they share
+      the same framing. Run once first to see image dimensions.
+    </div>
+
     <div class="section-label">Report details (for PDF export)</div>
     <div class="fields">
       <label>Client name
@@ -352,6 +373,34 @@ function buildAnalysisFormData() {
     form.append('roi_w', roiW);
     form.append('roi_h', roiH);
   }
+
+  const loadPercent = document.getElementById('loadPercent').value;
+  if (loadPercent !== '') form.append('load_percent', loadPercent);
+
+  const compareLines = document.getElementById('compareRegions').value
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  if (compareLines.length > 0) {
+    const regions = [];
+    for (const line of compareLines) {
+      const parts = line.split(',').map((p) => p.trim());
+      if (parts.length !== 5 || parts.slice(0, 4).some((p) => !/^-?\d+$/.test(p))) {
+        statusEl.textContent = `Compare regions: each line must be "x,y,w,h,label" with integer x/y/w/h, got "${line}".`;
+        statusEl.className = 'error';
+        return null;
+      }
+      const [x, y, w, h, label] = parts;
+      regions.push([[Number(x), Number(y), Number(w), Number(h)], label]);
+    }
+    if (regions.length < 2) {
+      statusEl.textContent = 'Compare regions: need at least 2 lines to compare.';
+      statusEl.className = 'error';
+      return null;
+    }
+    form.append('compare_regions', JSON.stringify(regions));
+  }
+
   return form;
 }
 
@@ -530,14 +579,16 @@ function renderResults(data) {
     const block = document.createElement('div');
     block.className = 'image-block';
 
+    const showLoad = r.hotspots.some((h) => h.delta_t_corrected_c !== null && h.delta_t_corrected_c !== undefined);
     const rowsHtml = r.hotspots.length
       ? `<table>
-          <thead><tr><th>Severity</th><th>ΔT (°C)</th><th>Max (°C)</th><th>Mean (°C)</th><th>Area (px)</th><th>BBox (x,y,w,h)</th></tr></thead>
+          <thead><tr><th>Severity</th><th>ΔT (°C)</th>${showLoad ? '<th>ΔT @ 100% load (°C)</th>' : ''}<th>Max (°C)</th><th>Mean (°C)</th><th>Area (px)</th><th>BBox (x,y,w,h)</th></tr></thead>
           <tbody>
             ${r.hotspots.map((h) => `
               <tr>
                 <td>${h.severity}</td>
                 <td>${h.delta_t_c}</td>
+                ${showLoad ? `<td>${h.delta_t_corrected_c ?? '-'}</td>` : ''}
                 <td>${h.max_temp_c}</td>
                 <td>${h.mean_temp_c}</td>
                 <td>${h.area_px}</td>
@@ -547,11 +598,29 @@ function renderResults(data) {
         </table>`
       : `<p style="color: var(--muted); margin: 0.25rem 0 0;">No anomalies detected.</p>`;
 
+    const comparative = r.comparative || [];
+    const comparativeHtml = comparative.length
+      ? `<p class="image-meta" style="margin-top: 0.75rem;">Comparative findings</p>
+        <table>
+          <thead><tr><th>Component</th><th>Severity</th><th>ΔT vs coolest peer (°C)</th><th>Max (°C)</th></tr></thead>
+          <tbody>
+            ${comparative.map((c) => `
+              <tr>
+                <td>${c.label}</td>
+                <td>${c.severity || 'baseline / no flag'}</td>
+                <td>${c.delta_t_c}</td>
+                <td>${c.max_temp_c}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`
+      : '';
+
     block.innerHTML = `
       <h3>${r.filename}</h3>
       <p class="image-meta">Ambient reference: ${r.ambient_c}°C</p>
       <img src="data:image/png;base64,${r.annotated_image_png_base64}" alt="Annotated thermal image of ${r.filename}" />
       ${rowsHtml}
+      ${comparativeHtml}
     `;
     imageResultsEl.appendChild(block);
   });

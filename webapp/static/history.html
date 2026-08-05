@@ -199,32 +199,55 @@ async function showDetail(runId) {
   document.getElementById('detailTitle').textContent = `Run #${run.id}`;
   const when = new Date(run.created_at).toLocaleString();
   const roiText = run.roi ? `ROI ${run.roi.join(',')}` : 'full frame';
+  const loadText = run.load_percent != null ? ` · load ${run.load_percent}%` : '';
   document.getElementById('detailMeta').textContent =
-    `${when} · by ${run.created_by} · ambient ${run.ambient_c ?? 'auto'} · min ΔT ${run.min_delta_c}°C · ${roiText}`;
+    `${when} · by ${run.created_by} · ambient ${run.ambient_c ?? 'auto'} · min ΔT ${run.min_delta_c}°C · ${roiText}${loadText}`;
 
   const imagesEl = document.getElementById('detailImages');
   imagesEl.innerHTML = '';
   run.images.forEach((img) => {
     const block = document.createElement('div');
     block.className = 'image-block';
+    const showLoad = img.hotspots.some((h) => h.delta_t_corrected_c !== null && h.delta_t_corrected_c !== undefined);
     const rowsHtml = img.hotspots.length
       ? `<table class="hotspots">
-          <thead><tr><th>Severity</th><th>ΔT (°C)</th><th>Max (°C)</th><th>Mean (°C)</th><th>Area (px)</th><th>BBox</th></tr></thead>
+          <thead><tr><th>Severity</th><th>ΔT (°C)</th>${showLoad ? '<th>ΔT @ 100% load (°C)</th>' : ''}<th>Max (°C)</th><th>Mean (°C)</th><th>Area (px)</th><th>BBox</th></tr></thead>
           <tbody>
             ${img.hotspots.map((h) => `
               <tr>
-                <td>${h.severity}</td><td>${h.delta_t_c}</td><td>${h.max_temp_c}</td>
+                <td>${h.severity}</td><td>${h.delta_t_c}</td>
+                ${showLoad ? `<td>${h.delta_t_corrected_c ?? '-'}</td>` : ''}
+                <td>${h.max_temp_c}</td>
                 <td>${h.mean_temp_c}</td><td>${h.area_px}</td>
                 <td>${h.bbox_x}, ${h.bbox_y}, ${h.bbox_w}, ${h.bbox_h}</td>
               </tr>`).join('')}
           </tbody>
         </table>`
       : `<p style="color: var(--muted); margin: 0.25rem 0 0;">No anomalies detected.</p>`;
+
+    const comparative = img.comparative || [];
+    const comparativeHtml = comparative.length
+      ? `<p style="color: var(--muted); font-size: 0.85rem; margin: 0.75rem 0 0.25rem;">Comparative findings</p>
+        <table class="hotspots">
+          <thead><tr><th>Component</th><th>Severity</th><th>ΔT vs coolest peer (°C)</th><th>Max (°C)</th></tr></thead>
+          <tbody>
+            ${comparative.map((c) => `
+              <tr>
+                <td>${c.label}</td>
+                <td>${c.severity || 'baseline / no flag'}</td>
+                <td>${c.delta_t_c}</td>
+                <td>${c.max_temp_c}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`
+      : '';
+
     block.innerHTML = `
       <h3 style="margin-bottom:0.15rem;">${img.filename}</h3>
       <p style="color: var(--muted); font-size: 0.85rem; margin: 0 0 0.5rem;">Ambient reference: ${img.ambient_c}°C</p>
       <img src="${img.image_url}" alt="Annotated thermal image of ${img.filename}" />
       ${rowsHtml}
+      ${comparativeHtml}
     `;
     imagesEl.appendChild(block);
   });

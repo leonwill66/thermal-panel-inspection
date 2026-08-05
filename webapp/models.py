@@ -41,6 +41,7 @@ class AnalysisRun(Base):
     roi_y: Mapped[int | None] = mapped_column(Integer, nullable=True)
     roi_w: Mapped[int | None] = mapped_column(Integer, nullable=True)
     roi_h: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    load_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     summary_json: Mapped[str] = mapped_column(Text)
     skipped_json: Mapped[str] = mapped_column(Text, default="[]")
@@ -59,5 +60,6 @@ class AnalysisImage(Base):
     ambient_c: Mapped[float] = mapped_column(Float)
     hotspots_json: Mapped[str] = mapped_column(Text)  # list[dict], same shape as hotspots_to_rows()
     annotated_image_path: Mapped[str] = mapped_column(String(500))  # relative to DATA_DIR
+    comparative_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # list[dict], comparative_to_rows()
 
     run: Mapped["AnalysisRun"] = relationship(back_populates="images")

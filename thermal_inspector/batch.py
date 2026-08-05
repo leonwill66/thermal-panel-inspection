@@ -6,8 +6,8 @@ from pathlib import Path
 
 import cv2
 
-from .core import find_hotspots, load_radiometric
-from .report import hotspots_to_rows, summarize, write_csv, write_json
+from .core import find_hotspots, find_comparative_anomalies, load_radiometric
+from .report import comparative_to_rows, hotspots_to_rows, summarize, write_csv, write_json
 from .annotate import annotate_image
 from .pdf_report import (
     ImageReportEntry,
@@ -38,6 +38,8 @@ def process_images(
     pdf_title: str = "Thermal Inspection Report",
     report_style: str = "full",
     metadata: ReportMetadata | None = None,
+    load_percent: float | None = None,
+    compare_regions: list[tuple[tuple[int, int, int, int], str]] | None = None,
 ) -> dict:
     """Run hotspot detection over a single image or a folder, writing annotated
     images plus a combined CSV/JSON report to outdir. Returns the summary dict.
@@ -46,7 +48,14 @@ def process_images(
     and skipped rather than aborting the whole batch. roi, if given, is applied
     to every image in the batch in the same pixel coordinates — only sensible
     when all images share the same framing/resolution (e.g. a fixed camera
-    position across a series).
+    position across a series). compare_regions carries the same caveat - it's
+    a list of (bbox, label) pairs applied to every image, so only meaningful
+    when they share identical framing (e.g. a fixed camera position, or a
+    single image passed as input_path).
+
+    load_percent, if given, is passed straight to find_hotspots() to
+    severity-classify each hotspot by its load-corrected ΔT rather than the
+    raw observed one (see core.load_adjusted_delta_t).
 
     If pdf is True, also writes outdir/report.pdf, in one of two styles:
     - report_style="full" (default): every image, ambient reference, full
@@ -86,6 +95,7 @@ def process_images(
                 min_delta_c=min_delta_c,
                 min_area_px=min_area_px,
                 roi=roi,
+                load_percent=load_percent,
             )
         except Exception as exc:
             print(f"[skip] {img_path.name}: {exc}", file=sys.stderr)
@@ -94,6 +104,11 @@ def process_images(
 
         rows = hotspots_to_rows(img_path.name, hotspots)
         all_rows.extend(rows)
+
+        comparative_rows = None
+        if compare_regions:
+            comparative = find_comparative_anomalies(thermogram.temperature_c, compare_regions)
+            comparative_rows = comparative_to_rows(img_path.name, comparative)
 
         annotated = annotate_image(thermogram, hotspots, use_visual=use_visual, roi=roi)
         annotated_path = outdir / f"{img_path.stem}_annotated.png"
@@ -106,6 +121,7 @@ def process_images(
                 hotspot_rows=rows,
                 ambient_c=ambient_used,
                 note=notes.get(img_path.name),
+                comparative_rows=comparative_rows,
             )
         )
 

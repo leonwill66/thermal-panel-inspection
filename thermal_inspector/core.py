@@ -32,6 +32,12 @@ DEFAULT_THRESHOLDS = [
     (0.0, "minor"),                # possible deficiency, monitor
 ]
 
+# Below this load %, the I^2R correction (see load_adjusted_delta_t) is
+# considered unreliable and callers should warn rather than silently trust
+# the corrected number - convective/radiative heat loss doesn't scale
+# cleanly enough at very light load for the square-law approximation to hold.
+MIN_RELIABLE_LOAD_PERCENT = 40.0
+
 
 @dataclass
 class Hotspot:
@@ -40,9 +46,11 @@ class Hotspot:
     max_temp_c: float
     mean_temp_c: float
     ambient_c: float
-    delta_t_c: float
+    delta_t_c: float  # as observed, at whatever load was present during inspection
     area_px: int
     severity: str
+    load_percent: Optional[float] = None  # load at inspection time, if supplied
+    delta_t_corrected_c: Optional[float] = None  # delta_t_c projected to 100% load
 
 
 @dataclass
@@ -101,6 +109,25 @@ def classify_severity(delta_t_c: float, thresholds=DEFAULT_THRESHOLDS) -> str:
     return thresholds[-1][1]
 
 
+def load_adjusted_delta_t(delta_t_observed_c: float, load_percent: float) -> float:
+    """Projects an observed temperature rise to what it would likely be at
+    100% rated load, using the standard I^2R approximation that resistive
+    heating - and so temperature rise above ambient - scales with the square
+    of load current: delta_T_corrected = delta_T_observed * (100 / load%)^2.
+
+    This is standard practice for evaluating a finding captured while
+    equipment wasn't at full load (a real fault can look deceptively mild
+    when lightly loaded, and vice versa) - see NETA/IR-inspection guidance
+    on load correction. It is only a reasonable approximation - convective
+    and radiative losses don't scale as cleanly at light load, so treat
+    corrected values below MIN_RELIABLE_LOAD_PERCENT load with caution
+    rather than as a precise prediction.
+    """
+    if load_percent <= 0:
+        raise ValueError(f"load_percent must be > 0, got {load_percent}")
+    return delta_t_observed_c * (100.0 / load_percent) ** 2
+
+
 def find_hotspots(
     temp_c: np.ndarray,
     ambient_c: Optional[float] = None,
@@ -108,6 +135,7 @@ def find_hotspots(
     min_area_px: int = 25,
     thresholds=DEFAULT_THRESHOLDS,
     roi: Optional[tuple[int, int, int, int]] = None,
+    load_percent: Optional[float] = None,
 ) -> tuple[list[Hotspot], float]:
     """Find anomalously hot regions in a temperature array.
 
@@ -123,7 +151,17 @@ def find_hotspots(
     isn't mistaken for a hotspot or skewed into the ambient baseline. Returned
     hotspot bboxes are still in the full frame's coordinate space. Omit roi to
     search the whole frame, as before.
+
+    load_percent, if given, is the equipment's load at inspection time as a
+    percent of rated (e.g. 60.0 for 60% load). Detection itself still uses
+    the raw observed delta-T (min_delta_c) - load correction only affects how
+    each found hotspot is severity-classified, via load_adjusted_delta_t().
+    Every Hotspot keeps its raw delta_t_c regardless; delta_t_corrected_c is
+    only populated when load_percent is supplied.
     """
+    if load_percent is not None and load_percent <= 0:
+        raise ValueError(f"load_percent must be > 0, got {load_percent}")
+
     height, width = temp_c.shape[:2]
     if roi is None:
         rx, ry, rw, rh = 0, 0, width, height
@@ -165,6 +203,9 @@ def find_hotspots(
         mean_t = float(region_temps.mean())
         delta_t = max_t - ambient_c
 
+        delta_t_corrected = load_adjusted_delta_t(delta_t, load_percent) if load_percent else None
+        severity_delta = delta_t_corrected if delta_t_corrected is not None else delta_t
+
         hotspots.append(
             Hotspot(
                 bbox=(x, y, w, h),
@@ -174,9 +215,91 @@ def find_hotspots(
                 ambient_c=ambient_c,
                 delta_t_c=delta_t,
                 area_px=area,
-                severity=classify_severity(delta_t, thresholds),
+                severity=classify_severity(severity_delta, thresholds),
+                load_percent=load_percent,
+                delta_t_corrected_c=delta_t_corrected,
             )
         )
 
-    hotspots.sort(key=lambda h: h.delta_t_c, reverse=True)
+    hotspots.sort(key=lambda h: h.delta_t_corrected_c if h.delta_t_corrected_c is not None else h.delta_t_c, reverse=True)
     return hotspots, ambient_c
+
+
+# (delta_t_cutoff_celsius, severity_label) for the comparative method - a
+# different scale than DEFAULT_THRESHOLDS, since components being compared
+# against each other under similar load should normally read very close to
+# identical, so even a few degrees of difference is meaningful (unlike
+# ambient-referenced ΔT, where enclosure heating alone commonly accounts for
+# a much larger gap). Commonly cited IR-inspection comparative-method bands.
+COMPARATIVE_THRESHOLDS = [
+    (15.0, "comparative_major"),     # major discrepancy, repair immediately
+    (4.0, "comparative_probable"),   # probable deficiency, repair as time permits
+    (1.0, "comparative_possible"),   # possible deficiency, warrants investigation
+]
+
+
+@dataclass
+class ComparativeAnomaly:
+    label: str
+    bbox: tuple[int, int, int, int]
+    max_temp_c: float
+    delta_t_c: float  # vs. the coolest region in the group
+    severity: Optional[str]  # None if within normal range of its peers
+
+
+def classify_comparative_severity(delta_t_c: float, thresholds=COMPARATIVE_THRESHOLDS) -> Optional[str]:
+    for cutoff, label in thresholds:
+        if delta_t_c >= cutoff:
+            return label
+    return None  # below the lowest threshold - no comparative concern
+
+
+def find_comparative_anomalies(
+    temp_c: np.ndarray,
+    regions: list[tuple[tuple[int, int, int, int], str]],
+    thresholds=COMPARATIVE_THRESHOLDS,
+) -> list[ComparativeAnomaly]:
+    """Compares corresponding components (e.g. three-phase breakers, or any
+    set of components expected to run at similar temperature under similar
+    load) against each other, rather than each in isolation against an
+    estimated ambient. This is the NETA-preferred "comparative method" -
+    it catches subtler faults that a single component's absolute deviation
+    from ambient can miss, and it's far less prone to the background/
+    reflection false positives the ambient-referenced method is vulnerable
+    to, since every region compared is one you've deliberately marked as an
+    equivalent component, not "whatever happens to be warm in frame."
+
+    regions is a list of (bbox, label) pairs - e.g.
+    [((10,10,20,20), "Phase A"), ((40,10,20,20), "Phase B"), ...] - and needs
+    at least 2. The coolest region's peak temperature is used as the
+    reference point (the presumed-healthy member of the group, assuming
+    roughly balanced load); every region's delta_t_c is measured against
+    that reference, not a global ambient estimate.
+    """
+    if len(regions) < 2:
+        raise ValueError("find_comparative_anomalies needs at least 2 regions to compare")
+
+    height, width = temp_c.shape[:2]
+    max_temps = []
+    for bbox, label in regions:
+        x, y, w, h = bbox
+        if w <= 0 or h <= 0:
+            raise ValueError(f"region {label!r} width/height must be positive, got {bbox}")
+        if x < 0 or y < 0 or x + w > width or y + h > height:
+            raise ValueError(f"region {label!r} {bbox} falls outside the {width}x{height} frame")
+        max_temps.append(float(temp_c[y : y + h, x : x + w].max()))
+
+    baseline = min(max_temps)
+
+    anomalies = [
+        ComparativeAnomaly(
+            label=label,
+            bbox=bbox,
+            max_temp_c=max_t,
+            delta_t_c=max_t - baseline,
+            severity=classify_comparative_severity(max_t - baseline, thresholds),
+        )
+        for (bbox, label), max_t in zip(regions, max_temps)
+    ]
+    anomalies.sort(key=lambda a: a.delta_t_c, reverse=True)
+    return anomalies
