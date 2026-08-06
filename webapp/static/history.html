@@ -77,6 +77,9 @@
   #detail .image-block img { max-width: 100%; border-radius: 8px; border: 1px solid var(--border); }
   #detail .image-block { margin-bottom: 1.5rem; }
   #detail table.hotspots { margin-top: 0.5rem; }
+  .image-pair { display: flex; gap: 1rem; flex-wrap: wrap; }
+  .image-pair figure { margin: 0; flex: 1 1 260px; min-width: 220px; }
+  .image-pair figcaption { font-size: 0.8rem; color: var(--muted); font-weight: 600; margin-bottom: 0.3rem; }
 
   .fields { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 1rem; }
   .fields label { display: flex; flex-direction: column; font-size: 0.85rem; color: var(--muted); gap: 0.25rem; }
@@ -242,10 +245,17 @@ async function showDetail(runId) {
         </table>`
       : '';
 
+    const photoHtml = img.photo_url
+      ? `<figure><figcaption>Visual photo</figcaption><img src="${img.photo_url}" alt="Visual photo of ${img.filename}" /></figure>`
+      : '';
+
     block.innerHTML = `
       <h3 style="margin-bottom:0.15rem;">${img.filename}</h3>
       <p style="color: var(--muted); font-size: 0.85rem; margin: 0 0 0.5rem;">Ambient reference: ${img.ambient_c}°C</p>
-      <img src="${img.image_url}" alt="Annotated thermal image of ${img.filename}" />
+      <div class="image-pair">
+        <figure><figcaption>Thermal</figcaption><img src="${img.image_url}" alt="Annotated thermal image of ${img.filename}" /></figure>
+        ${photoHtml}
+      </div>
       ${rowsHtml}
       ${comparativeHtml}
     `;

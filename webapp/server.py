@@ -334,8 +334,17 @@ async def analyze(
                 comparative = find_comparative_anomalies(thermogram.temperature_c, regions)
                 comparative_rows = comparative_to_rows(image_name, comparative)
 
+            visual_bytes = None
+            if thermogram.visual is not None:
+                ok_v, vbuf = cv2.imencode(".png", thermogram.visual)
+                visual_bytes = vbuf.tobytes() if ok_v else None
+
             stored_name = f"{i:04d}_{Path(image_name).name}"
             storage.save_image(f"{run.id}/{stored_name}", buf.tobytes())
+            visual_path = None
+            if visual_bytes is not None:
+                visual_path = f"{run.id}/{stored_name}.photo.png"
+                storage.save_image(visual_path, visual_bytes)
             db.add(
                 AnalysisImage(
                     run_id=run.id,
@@ -344,6 +353,7 @@ async def analyze(
                     hotspots_json=json.dumps(rows),
                     annotated_image_path=f"{run.id}/{stored_name}",
                     comparative_json=json.dumps(comparative_rows) if comparative_rows is not None else None,
+                    visual_image_path=visual_path,
                 )
             )
 
@@ -356,6 +366,7 @@ async def analyze(
                     "hotspots": rows,
                     "comparative": comparative_rows,
                     "annotated_image_png_base64": base64.b64encode(buf.tobytes()).decode("ascii"),
+                    "visual_image_png_base64": base64.b64encode(visual_bytes).decode("ascii") if visual_bytes else None,
                 }
             )
 
@@ -398,6 +409,7 @@ def report_from_history(
             raise HTTPException(
                 status_code=500, detail=f"Stored image for {img.filename!r} is missing from storage"
             )
+        visual_bytes = storage.load_image(img.visual_image_path) if img.visual_image_path else None
         entries.append(
             ImageReportEntry(
                 image_name=img.filename,
@@ -405,6 +417,7 @@ def report_from_history(
                 hotspot_rows=json.loads(img.hotspots_json),
                 ambient_c=img.ambient_c,
                 comparative_rows=json.loads(img.comparative_json) if img.comparative_json else None,
+                visual_image=visual_bytes,
             )
         )
     if not entries:
@@ -478,6 +491,7 @@ def get_history_run(run_id: int, user: User = Depends(get_current_user), db: Ses
                 "hotspots": json.loads(img.hotspots_json),
                 "comparative": json.loads(img.comparative_json) if img.comparative_json else None,
                 "image_url": f"/api/history/{run.id}/image/{img.id}",
+                "photo_url": f"/api/history/{run.id}/photo/{img.id}" if img.visual_image_path else None,
             }
             for img in run.images
         ],
@@ -493,6 +507,17 @@ def get_history_image(run_id: int, image_id: int, user: User = Depends(get_curre
     if image_bytes is None:
         raise HTTPException(status_code=404, detail="Image file missing from storage")
     return Response(content=image_bytes, media_type="image/png")
+
+
+@app.get("/api/history/{run_id}/photo/{image_id}")
+def get_history_photo(run_id: int, image_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    img = db.get(AnalysisImage, image_id)
+    if not img or img.run_id != run_id or not img.visual_image_path:
+        raise HTTPException(status_code=404, detail="Photo not found")
+    photo_bytes = storage.load_image(img.visual_image_path)
+    if photo_bytes is None:
+        raise HTTPException(status_code=404, detail="Photo file missing from storage")
+    return Response(content=photo_bytes, media_type="image/png")
 
 
 # ---------------------------------------------------------------------------

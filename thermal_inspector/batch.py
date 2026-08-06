@@ -114,6 +114,11 @@ def process_images(
         annotated_path = outdir / f"{img_path.stem}_annotated.png"
         cv2.imwrite(str(annotated_path), annotated)
 
+        visual_path = None
+        if thermogram.visual is not None:
+            visual_path = outdir / f"{img_path.stem}_photo.png"
+            cv2.imwrite(str(visual_path), thermogram.visual)
+
         pdf_entries.append(
             ImageReportEntry(
                 image_name=img_path.name,
@@ -122,6 +127,7 @@ def process_images(
                 ambient_c=ambient_used,
                 note=notes.get(img_path.name),
                 comparative_rows=comparative_rows,
+                visual_image=visual_path,
             )
         )
 

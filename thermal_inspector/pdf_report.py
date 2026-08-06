@@ -35,10 +35,16 @@ SEVERITY_ROW_COLORS = {
     "critical_immediate": colors.HexColor("#FADAFF"),
 }
 SEVERITY_CONSEQUENCE = {
-    "critical_immediate": "an imminent risk of component failure, and a potential safety hazard",
-    "critical": "a high risk of accelerated damage and unplanned equipment failure",
-    "serious": "a developing fault that will likely worsen without intervention",
-    "minor": "an early-stage deviation worth tracking before it develops into a larger issue",
+    "critical_immediate": (
+        "an imminent risk of electrical component failure - potentially arcing or fire - "
+        "and a safety hazard"
+    ),
+    "critical": "a high risk of accelerated electrical damage and unplanned equipment failure",
+    "serious": (
+        "a developing electrical fault - commonly a loose, corroded, or overloaded connection "
+        "- that will likely worsen without intervention"
+    ),
+    "minor": "an early-stage electrical deviation worth tracking before it develops into a larger fault",
 }
 SEVERITY_ACTION = {
     "critical_immediate": (
@@ -74,6 +80,7 @@ class ImageReportEntry:
     ambient_c: float
     note: str | None = None
     comparative_rows: list[dict] | None = None  # as produced by thermal_inspector.report.comparative_to_rows
+    visual_image: Path | bytes | None = None  # camera's embedded optical photo, unannotated, if present
 
 
 @dataclass
@@ -234,6 +241,43 @@ def _report_image(annotated_image: Path | bytes, display_width_in: float = 4.0) 
     return RLImage(source if isinstance(source, io.BytesIO) else str(source), width=display_w, height=display_h)
 
 
+def _thermal_photo_block(
+    thermal_image: Path | bytes, visual_image: Path | bytes | None, styles
+) -> Table | RLImage:
+    """Thermal (annotated) image, with the camera's matching visual photo
+    alongside it for context when available. The visual photo is shown
+    unannotated - its framing/lens isn't pixel-aligned with the thermal
+    sensor, so hotspot boxes drawn from thermal coordinates would land in
+    the wrong place on it. Falls back to the thermal image alone (same as
+    before this existed) when no visual photo was captured."""
+    if visual_image is None:
+        return _report_image(thermal_image, display_width_in=4.0)
+
+    pair_width_in = 3.15
+    thermal_flow = _report_image(thermal_image, display_width_in=pair_width_in)
+    visual_flow = _report_image(visual_image, display_width_in=pair_width_in)
+    caption_style = styles["Normal"]
+    table = Table(
+        [
+            [Paragraph("<b>Thermal</b>", caption_style), Paragraph("<b>Visual photo</b>", caption_style)],
+            [thermal_flow, visual_flow],
+        ],
+        colWidths=[(pair_width_in + 0.15) * inch, (pair_width_in + 0.15) * inch],
+        hAlign="LEFT",
+    )
+    table.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ]
+        )
+    )
+    return table
+
+
 def generate_audit_findings_report(
     entries: list[ImageReportEntry],
     out_path: str | Path,
@@ -321,10 +365,12 @@ def generate_audit_findings_report(
         story.append(Spacer(1, 0.1 * inch))
         for entry in findings_entries:
             story.append(Paragraph(entry.image_name, styles["Heading3"]))
-            story.append(_report_image(entry.annotated_image))
+            story.append(_thermal_photo_block(entry.annotated_image, entry.visual_image, styles))
             story.append(Spacer(1, 0.1 * inch))
 
             if entry.hotspot_rows:
+                story.append(Paragraph("<b>Electrical thermal anomaly detected</b> at the location(s) below.", styles["Normal"]))
+                story.append(Spacer(1, 0.05 * inch))
                 rows_with_location = [
                     {**row, "bbox_location": f"{row['bbox_x']}, {row['bbox_y']}, {row['bbox_w']}, {row['bbox_h']}"}
                     for row in entry.hotspot_rows
@@ -424,17 +470,19 @@ def generate_pdf_report(
         story.append(Paragraph(entry.image_name, styles["Heading2"]))
         story.append(Paragraph(f"Ambient reference: {entry.ambient_c:.1f}&deg;C", styles["Normal"]))
         story.append(Spacer(1, 0.1 * inch))
-        story.append(_report_image(entry.annotated_image))
+        story.append(_thermal_photo_block(entry.annotated_image, entry.visual_image, styles))
         story.append(Spacer(1, 0.1 * inch))
 
         if entry.hotspot_rows:
+            story.append(Paragraph("<b>Electrical thermal anomaly detected</b> at the location(s) below.", styles["Normal"]))
+            story.append(Spacer(1, 0.05 * inch))
             rows_with_location = [
                 {**row, "bbox_location": f"{row['bbox_x']}, {row['bbox_y']}, {row['bbox_w']}, {row['bbox_h']}"}
                 for row in entry.hotspot_rows
             ]
             story.append(_hotspot_table(rows_with_location, columns))
         else:
-            story.append(Paragraph("No anomalies detected.", styles["Normal"]))
+            story.append(Paragraph("No electrical thermal anomalies detected.", styles["Normal"]))
 
         if entry.comparative_rows:
             story.append(Spacer(1, 0.1 * inch))

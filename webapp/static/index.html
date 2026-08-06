@@ -108,6 +108,9 @@
   .image-block img { max-width: 100%; border-radius: 8px; border: 1px solid var(--border); }
   .image-block { margin-bottom: 1.75rem; }
   .image-block h3 { margin-bottom: 0.15rem; }
+  .image-pair { display: flex; gap: 1rem; flex-wrap: wrap; }
+  .image-pair figure { margin: 0; flex: 1 1 260px; min-width: 220px; }
+  .image-pair figcaption { font-size: 0.8rem; color: var(--muted); font-weight: 600; margin-bottom: 0.3rem; }
   .image-meta { color: var(--muted); font-size: 0.85rem; margin: 0 0 0.5rem; }
 
   .summary-badges { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 0.75rem 0 1rem; }
@@ -615,10 +618,17 @@ function renderResults(data) {
         </table>`
       : '';
 
+    const photoHtml = r.visual_image_png_base64
+      ? `<figure><figcaption>Visual photo</figcaption><img src="data:image/png;base64,${r.visual_image_png_base64}" alt="Visual photo of ${r.filename}" /></figure>`
+      : '';
+
     block.innerHTML = `
       <h3>${r.filename}</h3>
       <p class="image-meta">Ambient reference: ${r.ambient_c}°C</p>
-      <img src="data:image/png;base64,${r.annotated_image_png_base64}" alt="Annotated thermal image of ${r.filename}" />
+      <div class="image-pair">
+        <figure><figcaption>Thermal</figcaption><img src="data:image/png;base64,${r.annotated_image_png_base64}" alt="Annotated thermal image of ${r.filename}" /></figure>
+        ${photoHtml}
+      </div>
       ${rowsHtml}
       ${comparativeHtml}
     `;

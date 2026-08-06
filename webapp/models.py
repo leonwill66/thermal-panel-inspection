@@ -61,5 +61,6 @@ class AnalysisImage(Base):
     hotspots_json: Mapped[str] = mapped_column(Text)  # list[dict], same shape as hotspots_to_rows()
     annotated_image_path: Mapped[str] = mapped_column(String(500))  # relative to DATA_DIR
     comparative_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # list[dict], comparative_to_rows()
+    visual_image_path: Mapped[str | None] = mapped_column(String(500), nullable=True)  # camera's embedded photo, if present
 
     run: Mapped["AnalysisRun"] = relationship(back_populates="images")
