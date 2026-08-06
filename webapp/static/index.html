@@ -111,6 +111,9 @@
   .image-pair { display: flex; gap: 1rem; flex-wrap: wrap; }
   .image-pair figure { margin: 0; flex: 1 1 260px; min-width: 220px; }
   .image-pair figcaption { font-size: 0.8rem; color: var(--muted); font-weight: 600; margin-bottom: 0.3rem; }
+  tr.hotspot-excluded { opacity: 0.5; }
+  tr.hotspot-excluded td:not(:first-child) { text-decoration: line-through; }
+  .exclude-hint { font-size: 0.78rem; color: var(--muted); margin: 0.35rem 0 0; }
   .image-meta { color: var(--muted); font-size: 0.85rem; margin: 0 0 0.5rem; }
 
   .summary-badges { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 0.75rem 0 1rem; }
@@ -352,6 +355,20 @@ function clearSelection() {
 
 // Returns a FormData with files/ambient/min_delta/min_area/roi, or null (with
 // an error already shown in statusEl) if the ROI fields are only partly filled.
+async function setExcludedHotspots(runId, imageId, indices) {
+  const resp = await fetch(`/api/history/${runId}/images/${imageId}/exclude`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hotspot_indices: indices }),
+  });
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => ({}));
+    throw new Error(data.detail || 'Failed to update finding');
+  }
+  return resp.json();
+}
+
 function buildAnalysisFormData() {
   const form = new FormData();
   selectedFiles.forEach((f) => form.append('files', f));
@@ -585,10 +602,11 @@ function renderResults(data) {
     const showLoad = r.hotspots.some((h) => h.delta_t_corrected_c !== null && h.delta_t_corrected_c !== undefined);
     const rowsHtml = r.hotspots.length
       ? `<table>
-          <thead><tr><th>Severity</th><th>ΔT (°C)</th>${showLoad ? '<th>ΔT @ 100% load (°C)</th>' : ''}<th>Max (°C)</th><th>Mean (°C)</th><th>Area (px)</th><th>BBox (x,y,w,h)</th></tr></thead>
+          <thead><tr><th>Not a fault</th><th>Severity</th><th>ΔT (°C)</th>${showLoad ? '<th>ΔT @ 100% load (°C)</th>' : ''}<th>Max (°C)</th><th>Mean (°C)</th><th>Area (px)</th><th>BBox (x,y,w,h)</th></tr></thead>
           <tbody>
-            ${r.hotspots.map((h) => `
+            ${r.hotspots.map((h, i) => `
               <tr>
+                <td><input type="checkbox" class="exclude-checkbox" data-image-id="${r.image_id}" data-index="${i}" /></td>
                 <td>${h.severity}</td>
                 <td>${h.delta_t_c}</td>
                 ${showLoad ? `<td>${h.delta_t_corrected_c ?? '-'}</td>` : ''}
@@ -598,7 +616,8 @@ function renderResults(data) {
                 <td>${h.bbox_x}, ${h.bbox_y}, ${h.bbox_w}, ${h.bbox_h}</td>
               </tr>`).join('')}
           </tbody>
-        </table>`
+        </table>
+        <p class="exclude-hint">Check "Not a fault" for anything that isn't a real electrical issue (a tool left in frame, bare reflective metal, etc.) - it's dropped from reports and counts, and the box is removed from the picture.</p>`
       : `<p style="color: var(--muted); margin: 0.25rem 0 0;">No anomalies detected.</p>`;
 
     const comparative = r.comparative || [];
@@ -626,13 +645,37 @@ function renderResults(data) {
       <h3>${r.filename}</h3>
       <p class="image-meta">Ambient reference: ${r.ambient_c}°C</p>
       <div class="image-pair">
-        <figure><figcaption>Thermal</figcaption><img src="data:image/png;base64,${r.annotated_image_png_base64}" alt="Annotated thermal image of ${r.filename}" /></figure>
+        <figure><figcaption>Thermal</figcaption><img id="thermal-img-${r.image_id}" src="data:image/png;base64,${r.annotated_image_png_base64}" alt="Annotated thermal image of ${r.filename}" /></figure>
         ${photoHtml}
       </div>
       ${rowsHtml}
       ${comparativeHtml}
     `;
     imageResultsEl.appendChild(block);
+
+    block.querySelectorAll('.exclude-checkbox').forEach((box) => {
+      box.addEventListener('change', async () => {
+        const imageId = box.dataset.imageId;
+        const table = box.closest('table');
+        const indices = Array.from(table.querySelectorAll('.exclude-checkbox'))
+          .filter((cb) => cb.checked)
+          .map((cb) => Number(cb.dataset.index));
+        box.disabled = true;
+        try {
+          const result = await setExcludedHotspots(currentRunId, imageId, indices);
+          renderBadges(result.run_summary);
+          const img = document.getElementById(`thermal-img-${imageId}`);
+          if (img) img.src = `/api/history/${currentRunId}/image/${imageId}?v=${Date.now()}`;
+          box.closest('tr').classList.toggle('hotspot-excluded', box.checked);
+        } catch (err) {
+          box.checked = !box.checked;
+          statusEl.textContent = err.message;
+          statusEl.className = 'error';
+        } finally {
+          box.disabled = false;
+        }
+      });
+    });
   });
 
   skippedBlockEl.innerHTML = '';

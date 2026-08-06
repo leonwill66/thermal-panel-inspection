@@ -25,7 +25,8 @@ from collections import defaultdict
 from pathlib import Path
 
 import cv2
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+import numpy as np
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
@@ -42,6 +43,7 @@ from thermal_inspector import (
     generate_pdf_report,
     load_radiometric,
 )
+from thermal_inspector.annotate import compute_scale, draw_hotspot_rows
 from thermal_inspector.core import find_comparative_anomalies
 from thermal_inspector.report import comparative_to_rows, hotspots_to_rows, summarize
 
@@ -177,6 +179,41 @@ def _user_summary(u: User) -> dict:
         "is_active": u.is_active,
         "created_at": u.created_at.isoformat(),
     }
+
+
+def _excluded_indices(img: AnalysisImage) -> set[int]:
+    return set(json.loads(img.excluded_hotspot_indices)) if img.excluded_hotspot_indices else set()
+
+
+def _effective_hotspot_rows(img: AnalysisImage) -> list[dict]:
+    """Hotspot rows for img with reviewer-dismissed false positives (e.g. a
+    tool in frame, bare reflective metal) removed - what should actually be
+    treated as a finding."""
+    excluded = _excluded_indices(img)
+    rows = json.loads(img.hotspots_json)
+    return [row for i, row in enumerate(rows) if i not in excluded]
+
+
+def _recompute_run_summary(run: AnalysisRun) -> None:
+    """Recomputes run.summary_json from all images' effective (non-excluded)
+    hotspot rows. Call after changing an image's excluded set, before commit."""
+    all_rows = [row for img in run.images for row in _effective_hotspot_rows(img)]
+    run.summary_json = json.dumps(summarize(all_rows))
+
+
+def _rendered_annotated_bytes(img: AnalysisImage) -> bytes | None:
+    """The annotated (boxed) image to actually show/report for img, reflecting
+    any reviewer exclusions. Images stored before has_unannotated_base existed
+    already have hotspot boxes baked in permanently and are returned as-is -
+    exclusions on those are only reflected in tables/summaries, not the
+    picture itself."""
+    base_bytes = storage.load_image(img.annotated_image_path)
+    if base_bytes is None or not img.has_unannotated_base:
+        return base_bytes
+    base_arr = cv2.imdecode(np.frombuffer(base_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+    rendered = draw_hotspot_rows(base_arr, _effective_hotspot_rows(img), scale=img.annotate_scale)
+    ok, buf = cv2.imencode(".png", rendered)
+    return buf.tobytes() if ok else base_bytes
 
 
 def _run_summary(run: AnalysisRun) -> dict:
@@ -319,8 +356,15 @@ async def analyze(
                 skipped.append({"filename": image_name, "reason": str(exc.detail)})
                 continue
 
-            annotated = annotate_image(thermogram, hotspots, roi=roi)
-            ok, buf = cv2.imencode(".png", annotated)
+            # Store the UNANNOTATED base (no hotspot boxes) so a reviewer's
+            # later exclusions can be reflected by redrawing just the
+            # currently-active hotspots (see draw_hotspot_rows), rather than
+            # a fixed image baked in at analyze time that would still show a
+            # box around something a reviewer has dismissed as a false
+            # positive (e.g. a tool left in frame, bare reflective metal).
+            base_image = annotate_image(thermogram, [], roi=roi)
+            scale = compute_scale(thermogram.temperature_c.shape[1])
+            ok, base_buf = cv2.imencode(".png", base_image)
             if not ok:
                 skipped.append({"filename": image_name, "reason": "Failed to encode annotated image"})
                 continue
@@ -328,6 +372,12 @@ async def analyze(
             rows = hotspots_to_rows(image_name, hotspots)
             all_rows.extend(rows)
             height, width = thermogram.temperature_c.shape[:2]
+
+            preview = draw_hotspot_rows(base_image, rows, scale=scale)
+            ok_p, buf = cv2.imencode(".png", preview)
+            if not ok_p:
+                skipped.append({"filename": image_name, "reason": "Failed to encode annotated image"})
+                continue
 
             comparative_rows = None
             if regions:
@@ -340,25 +390,28 @@ async def analyze(
                 visual_bytes = vbuf.tobytes() if ok_v else None
 
             stored_name = f"{i:04d}_{Path(image_name).name}"
-            storage.save_image(f"{run.id}/{stored_name}", buf.tobytes())
+            storage.save_image(f"{run.id}/{stored_name}", base_buf.tobytes())
             visual_path = None
             if visual_bytes is not None:
                 visual_path = f"{run.id}/{stored_name}.photo.png"
                 storage.save_image(visual_path, visual_bytes)
-            db.add(
-                AnalysisImage(
-                    run_id=run.id,
-                    filename=image_name,
-                    ambient_c=ambient_used,
-                    hotspots_json=json.dumps(rows),
-                    annotated_image_path=f"{run.id}/{stored_name}",
-                    comparative_json=json.dumps(comparative_rows) if comparative_rows is not None else None,
-                    visual_image_path=visual_path,
-                )
+            image_row = AnalysisImage(
+                run_id=run.id,
+                filename=image_name,
+                ambient_c=ambient_used,
+                hotspots_json=json.dumps(rows),
+                annotated_image_path=f"{run.id}/{stored_name}",
+                comparative_json=json.dumps(comparative_rows) if comparative_rows is not None else None,
+                visual_image_path=visual_path,
+                annotate_scale=scale,
+                has_unannotated_base=True,
             )
+            db.add(image_row)
+            db.flush()  # assigns image_row.id
 
             results.append(
                 {
+                    "image_id": image_row.id,
                     "filename": image_name,
                     "ambient_c": round(ambient_used, 2),
                     "image_width": width,
@@ -378,6 +431,39 @@ async def analyze(
         return {"run_id": run.id, "results": results, "skipped": skipped, "summary": summary}
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@app.post("/api/history/{run_id}/images/{image_id}/exclude")
+def set_excluded_hotspots(
+    run_id: int,
+    image_id: int,
+    hotspot_indices: list[int] = Body(..., embed=True),
+    user: User = Depends(require_role("admin", "inspector")),
+    db: Session = Depends(get_db),
+):
+    """Marks specific hotspot findings on one image as reviewer-dismissed
+    false positives (e.g. a tool left in frame, bare reflective metal, the
+    back of the panel enclosure) - excluded from reports and summary counts,
+    but the underlying detection data isn't deleted so this can be undone.
+    hotspot_indices replaces the full excluded set for this image (send every
+    index that should currently be excluded, not just newly-added ones)."""
+    img = db.get(AnalysisImage, image_id)
+    if not img or img.run_id != run_id:
+        raise HTTPException(status_code=404, detail="Image not found")
+    total = len(json.loads(img.hotspots_json))
+    if any(i < 0 or i >= total for i in hotspot_indices):
+        raise HTTPException(status_code=422, detail=f"hotspot_indices must be in range [0, {total})")
+
+    img.excluded_hotspot_indices = json.dumps(sorted(set(hotspot_indices)))
+    _recompute_run_summary(img.run)
+    db.commit()
+
+    excluded = _excluded_indices(img)
+    rows = json.loads(img.hotspots_json)
+    return {
+        "hotspots": [{**row, "excluded": i in excluded} for i, row in enumerate(rows)],
+        "run_summary": json.loads(img.run.summary_json),
+    }
 
 
 @app.post("/api/history/{run_id}/report")
@@ -404,7 +490,7 @@ def report_from_history(
 
     entries = []
     for img in run.images:
-        image_bytes = storage.load_image(img.annotated_image_path)
+        image_bytes = _rendered_annotated_bytes(img)
         if image_bytes is None:
             raise HTTPException(
                 status_code=500, detail=f"Stored image for {img.filename!r} is missing from storage"
@@ -414,7 +500,7 @@ def report_from_history(
             ImageReportEntry(
                 image_name=img.filename,
                 annotated_image=image_bytes,
-                hotspot_rows=json.loads(img.hotspots_json),
+                hotspot_rows=_effective_hotspot_rows(img),
                 ambient_c=img.ambient_c,
                 comparative_rows=json.loads(img.comparative_json) if img.comparative_json else None,
                 visual_image=visual_bytes,
@@ -488,10 +574,14 @@ def get_history_run(run_id: int, user: User = Depends(get_current_user), db: Ses
                 "id": img.id,
                 "filename": img.filename,
                 "ambient_c": round(img.ambient_c, 2),
-                "hotspots": json.loads(img.hotspots_json),
+                "hotspots": [
+                    {**row, "excluded": i in _excluded_indices(img)}
+                    for i, row in enumerate(json.loads(img.hotspots_json))
+                ],
                 "comparative": json.loads(img.comparative_json) if img.comparative_json else None,
                 "image_url": f"/api/history/{run.id}/image/{img.id}",
                 "photo_url": f"/api/history/{run.id}/photo/{img.id}" if img.visual_image_path else None,
+                "image_updates_on_exclude": img.has_unannotated_base,
             }
             for img in run.images
         ],
@@ -503,7 +593,7 @@ def get_history_image(run_id: int, image_id: int, user: User = Depends(get_curre
     img = db.get(AnalysisImage, image_id)
     if not img or img.run_id != run_id:
         raise HTTPException(status_code=404, detail="Image not found")
-    image_bytes = storage.load_image(img.annotated_image_path)
+    image_bytes = _rendered_annotated_bytes(img)
     if image_bytes is None:
         raise HTTPException(status_code=404, detail="Image file missing from storage")
     return Response(content=image_bytes, media_type="image/png")
