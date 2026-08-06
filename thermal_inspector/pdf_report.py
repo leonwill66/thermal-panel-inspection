@@ -75,7 +75,7 @@ COMPARATIVE_ACTION = {
 @dataclass
 class ImageReportEntry:
     image_name: str
-    annotated_image: Path | bytes  # local file path, or raw PNG bytes (e.g. loaded from object storage)
+    annotated_image: Path | bytes | None  # local file path, raw PNG bytes, or None if unavailable (e.g. lost from storage) - the report still generates, noting it's missing
     hotspot_rows: list[dict]  # as produced by thermal_inspector.report.hotspots_to_rows
     ambient_c: float
     note: str | None = None
@@ -241,15 +241,26 @@ def _report_image(annotated_image: Path | bytes, display_width_in: float = 4.0) 
     return RLImage(source if isinstance(source, io.BytesIO) else str(source), width=display_w, height=display_h)
 
 
+def _unavailable_placeholder(styles) -> Paragraph:
+    return Paragraph(
+        "<i>Image unavailable (lost from storage) - the findings below are still from the original analysis.</i>",
+        styles["Normal"],
+    )
+
+
 def _thermal_photo_block(
-    thermal_image: Path | bytes, visual_image: Path | bytes | None, styles
-) -> Table | RLImage:
+    thermal_image: Path | bytes | None, visual_image: Path | bytes | None, styles
+) -> Table | RLImage | Paragraph:
     """Thermal (annotated) image, with the camera's matching visual photo
     alongside it for context when available. The visual photo is shown
     unannotated - its framing/lens isn't pixel-aligned with the thermal
     sensor, so hotspot boxes drawn from thermal coordinates would land in
     the wrong place on it. Falls back to the thermal image alone (same as
-    before this existed) when no visual photo was captured."""
+    before this existed) when no visual photo was captured. thermal_image
+    being None (e.g. lost from storage) doesn't abort the report - the rest
+    of that image's findings still render, with a note in place of the picture."""
+    if thermal_image is None:
+        return _unavailable_placeholder(styles)
     if visual_image is None:
         return _report_image(thermal_image, display_width_in=4.0)
 

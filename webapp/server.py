@@ -201,6 +201,30 @@ def _recompute_run_summary(run: AnalysisRun) -> None:
     run.summary_json = json.dumps(summarize(all_rows))
 
 
+def _placeholder_image_bytes(message: str) -> bytes:
+    """A small placeholder PNG for when a stored image is missing (e.g. lost
+    from object storage) - shown instead of a broken image icon."""
+    canvas = np.full((360, 480, 3), 40, dtype=np.uint8)
+    words = message.split()
+    lines: list[str] = []
+    line = ""
+    for word in words:
+        candidate = f"{line} {word}".strip()
+        if len(candidate) > 28:
+            lines.append(line)
+            line = word
+        else:
+            line = candidate
+    if line:
+        lines.append(line)
+    y = 170 - (len(lines) - 1) * 12
+    for text_line in lines:
+        cv2.putText(canvas, text_line, (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (170, 170, 170), 1, cv2.LINE_AA)
+        y += 24
+    ok, buf = cv2.imencode(".png", canvas)
+    return buf.tobytes()
+
+
 def _rendered_annotated_bytes(img: AnalysisImage) -> bytes | None:
     """The annotated (boxed) image to actually show/report for img, reflecting
     any reviewer exclusions. Images stored before has_unannotated_base existed
@@ -490,11 +514,10 @@ def report_from_history(
 
     entries = []
     for img in run.images:
+        # A missing stored image (e.g. lost from object storage) doesn't
+        # abort the whole report - ImageReportEntry.annotated_image=None
+        # renders as a "picture unavailable" note, findings still included.
         image_bytes = _rendered_annotated_bytes(img)
-        if image_bytes is None:
-            raise HTTPException(
-                status_code=500, detail=f"Stored image for {img.filename!r} is missing from storage"
-            )
         visual_bytes = storage.load_image(img.visual_image_path) if img.visual_image_path else None
         entries.append(
             ImageReportEntry(
@@ -593,9 +616,7 @@ def get_history_image(run_id: int, image_id: int, user: User = Depends(get_curre
     img = db.get(AnalysisImage, image_id)
     if not img or img.run_id != run_id:
         raise HTTPException(status_code=404, detail="Image not found")
-    image_bytes = _rendered_annotated_bytes(img)
-    if image_bytes is None:
-        raise HTTPException(status_code=404, detail="Image file missing from storage")
+    image_bytes = _rendered_annotated_bytes(img) or _placeholder_image_bytes("Image unavailable - lost from storage")
     return Response(content=image_bytes, media_type="image/png")
 
 
@@ -604,9 +625,7 @@ def get_history_photo(run_id: int, image_id: int, user: User = Depends(get_curre
     img = db.get(AnalysisImage, image_id)
     if not img or img.run_id != run_id or not img.visual_image_path:
         raise HTTPException(status_code=404, detail="Photo not found")
-    photo_bytes = storage.load_image(img.visual_image_path)
-    if photo_bytes is None:
-        raise HTTPException(status_code=404, detail="Photo file missing from storage")
+    photo_bytes = storage.load_image(img.visual_image_path) or _placeholder_image_bytes("Photo unavailable - lost from storage")
     return Response(content=photo_bytes, media_type="image/png")
 
 
