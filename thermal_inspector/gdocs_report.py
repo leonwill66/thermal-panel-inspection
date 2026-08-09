@@ -80,13 +80,18 @@ def _upload_temp_image(drive_service, image_bytes: bytes, folder_id: str) -> str
     return file["id"]
 
 
-def _find_table(doc: dict, start_index: int) -> dict:
+def _find_table(doc: dict, start_index: int) -> tuple[int, dict]:
+    """Returns (actual_start_index, table_object). The actual start index
+    isn't guaranteed to equal the index we requested insertTable at - it's
+    also needed later for updateTableCellStyle's tableStartLocation, which
+    404s/400s if given a stale or merely-assumed index rather than the one
+    Docs actually assigned."""
     for el in doc["body"]["content"]:
         if "table" in el and el.get("startIndex") == start_index:
-            return el["table"]
+            return el["startIndex"], el["table"]
     # Fall back to the most recently inserted table if the exact start
     # index isn't found (e.g. Docs coalesced an adjacent structural element).
-    tables = [el["table"] for el in doc["body"]["content"] if "table" in el]
+    tables = [(el["startIndex"], el["table"]) for el in doc["body"]["content"] if "table" in el]
     if tables:
         return tables[-1]
     raise RuntimeError("Inserted table not found when re-fetching the document")
@@ -226,7 +231,7 @@ class _DocBuilder:
         ).execute()
 
         doc = self._docs.documents().get(documentId=self._document_id).execute()
-        table_el = _find_table(doc, table_start)
+        table_start, table_el = _find_table(doc, table_start)
 
         # A freshly inserted table cell holds exactly one empty paragraph;
         # its startIndex is where that cell's text goes. Capture every
@@ -271,10 +276,18 @@ class _DocBuilder:
                 style_requests.append(
                     {
                         "updateTableCellStyle": {
-                            "tableCellLocation": {
-                                "tableStartLocation": {"index": table_start},
-                                "rowIndex": r,
-                                "columnIndex": c,
+                            # A single cell is addressed as a 1x1 tableRange -
+                            # updateTableCellStyle has no bare "target this
+                            # one cell" field, only tableRange (a span of
+                            # cells) or tableStartLocation (the whole table).
+                            "tableRange": {
+                                "tableCellLocation": {
+                                    "tableStartLocation": {"index": table_start},
+                                    "rowIndex": r,
+                                    "columnIndex": c,
+                                },
+                                "rowSpan": 1,
+                                "columnSpan": 1,
                             },
                             "tableCellStyle": {"backgroundColor": {"color": {"rgbColor": bg}}},
                             "fields": "backgroundColor",
