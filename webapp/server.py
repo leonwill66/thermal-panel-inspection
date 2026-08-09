@@ -496,23 +496,27 @@ def set_visual_note(
     run_id: int,
     image_id: int,
     note: str | None = Body(None, embed=True),
+    anomaly: bool = Body(False, embed=True),
     user: User = Depends(require_role("admin", "inspector")),
     db: Session = Depends(get_db),
 ):
-    """Records (or clears, if note is blank/omitted) an inspector-entered
-    note about a visually-observed issue that thermal detection wouldn't
-    catch - physical damage, corrosion, a cracked enclosure, etc. Unlike
-    hotspot findings this isn't detected automatically, so there's nothing
-    to recompute here - just persisted and, from generate_audit_findings_report
-    onward, enough on its own to keep the image from being treated as
-    'clean' and dropped from the client-facing audit report."""
+    """Records an inspector's explicit flag for a visually-observed issue
+    that thermal detection wouldn't catch - physical damage, corrosion, a
+    cracked enclosure, etc - plus an optional free-text description. anomaly
+    is the flag that actually drives report inclusion (from
+    generate_audit_findings_report onward, enough on its own to keep the
+    image from being treated as 'clean' and dropped from the client-facing
+    audit report); note is just supplementary text and doesn't affect
+    inclusion by itself. Unlike hotspot findings this isn't detected
+    automatically, so there's nothing to recompute here - just persisted."""
     img = db.get(AnalysisImage, image_id)
     if not img or img.run_id != run_id:
         raise HTTPException(status_code=404, detail="Image not found")
 
     img.visual_note = note.strip() if note and note.strip() else None
+    img.visual_anomaly = anomaly
     db.commit()
-    return {"visual_note": img.visual_note}
+    return {"visual_note": img.visual_note, "visual_anomaly": img.visual_anomaly}
 
 
 def _load_report_entries(run_id: int, db: Session) -> tuple[list[ImageReportEntry], list[tuple[str, str]]]:
@@ -539,6 +543,7 @@ def _load_report_entries(run_id: int, db: Session) -> tuple[list[ImageReportEntr
                 comparative_rows=json.loads(img.comparative_json) if img.comparative_json else None,
                 visual_image=visual_bytes,
                 note=img.visual_note,
+                visual_anomaly=img.visual_anomaly,
             )
         )
     if not entries:
@@ -689,6 +694,7 @@ def get_history_run(run_id: int, user: User = Depends(get_current_user), db: Ses
                 "photo_url": f"/api/history/{run.id}/photo/{img.id}" if img.visual_image_path else None,
                 "image_updates_on_exclude": img.has_unannotated_base,
                 "visual_note": img.visual_note,
+                "visual_anomaly": img.visual_anomaly,
             }
             for img in run.images
         ],

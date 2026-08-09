@@ -36,6 +36,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 # database, where create_all() already defines the column correctly.
 _COLUMN_MIGRATIONS = [
     ("analysis_images", "visual_note", "TEXT"),
+    ("analysis_images", "visual_anomaly", "BOOLEAN NOT NULL DEFAULT FALSE"),
 ]
 
 

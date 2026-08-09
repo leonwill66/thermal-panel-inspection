@@ -78,7 +78,8 @@ class ImageReportEntry:
     annotated_image: Path | bytes | None  # local file path, raw PNG bytes, or None if unavailable (e.g. lost from storage) - the report still generates, noting it's missing
     hotspot_rows: list[dict]  # as produced by thermal_inspector.report.hotspots_to_rows
     ambient_c: float
-    note: str | None = None
+    note: str | None = None  # optional description of visual_anomaly - not itself a flag; see visual_anomaly
+    visual_anomaly: bool = False  # explicit reviewer flag: a visible (non-thermal) issue was observed - e.g. physical damage, corrosion. On its own (no thermal hotspot_rows) this is still enough to keep the image in generate_audit_findings_report
     comparative_rows: list[dict] | None = None  # as produced by thermal_inspector.report.comparative_to_rows
     visual_image: Path | bytes | None = None  # camera's embedded optical photo, unannotated, if present
 
@@ -227,7 +228,7 @@ def _comparative_narrative(all_comparative_rows: list[dict]) -> str | None:
 def _has_findings(entry: ImageReportEntry) -> bool:
     if entry.hotspot_rows:
         return True
-    if entry.note:
+    if entry.visual_anomaly:
         return True
     return any(row.get("severity") for row in (entry.comparative_rows or []))
 
@@ -306,10 +307,12 @@ def generate_audit_findings_report(
     Each entry's hotspot_rows should already reflect reviewed judgment —
     e.g. regions assessed as camera artifacts (reflections, objects in frame)
     should be excluded from hotspot_rows before calling this, not included
-    with a caveat. entries.note is rendered as a visually-observed (non-
-    thermal) issue - e.g. physical damage a camera wouldn't catch - and is
-    enough on its own to keep an image from being treated as clean and
-    dropped from this report, even with no thermal hotspot_rows. Use
+    with a caveat. entries.visual_anomaly is an explicit reviewer flag for a
+    visually-observed (non-thermal) issue - e.g. physical damage a camera
+    wouldn't catch - and is enough on its own to keep an image from being
+    treated as clean and dropped from this report, even with no thermal
+    hotspot_rows; entries.note is just the optional description shown
+    alongside that flag, not itself a trigger for inclusion. Use
     generate_pdf_report if you need the fuller investigation-record version
     (every image individually, clean or not, plus a skipped-files appendix).
 
@@ -403,9 +406,10 @@ def generate_audit_findings_report(
                 ]
                 story.append(_hotspot_table(comp_rows_with_location, comparative_columns, row_colors_map=COMPARATIVE_ROW_COLORS))
 
-            if entry.note:
+            if entry.visual_anomaly:
                 story.append(Spacer(1, 0.1 * inch))
-                story.append(Paragraph(f"<b>Visual issue noted:</b> {entry.note}", styles["Normal"]))
+                note_text = entry.note or "Visual anomaly flagged (no description provided)."
+                story.append(Paragraph(f"<b>Visual issue noted:</b> {note_text}", styles["Normal"]))
 
             story.append(Spacer(1, 0.35 * inch))
 

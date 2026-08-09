@@ -437,8 +437,9 @@ def build_findings_doc(
                     builder.paragraph("Comparative findings", heading="HEADING_3")
                     builder.table(_COMPARATIVE_COLUMNS, _with_bbox_location(flagged_comparative), COMPARATIVE_ROW_COLORS)
 
-                if entry.note:
-                    builder.rich_paragraph([("Visual issue noted: ", True), (entry.note, False)])
+                if entry.visual_anomaly:
+                    note_text = entry.note or "Visual anomaly flagged (no description provided)."
+                    builder.rich_paragraph([("Visual issue noted: ", True), (note_text, False)])
 
     else:  # style == "full"
         total_hotspots = sum(len(e.hotspot_rows) for e in entries)

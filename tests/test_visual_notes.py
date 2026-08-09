@@ -1,7 +1,8 @@
-"""Tests the visual-note feature: an inspector can flag a visible (non-
-thermal) issue on an image, and it's enough on its own to keep that image
-from being dropped as 'clean' by the client-facing audit report - both the
-PDF and Google Docs versions."""
+"""Tests the visual-anomaly feature: an inspector can explicitly flag a
+visible (non-thermal) issue on an image, with an optional free-text
+description. The flag alone - not the text - is what keeps that image from
+being dropped as 'clean' by the client-facing audit report, in both the PDF
+and Google Docs versions."""
 
 from __future__ import annotations
 
@@ -27,35 +28,52 @@ def _upload_and_get_ids(client):
 
 
 class TestSetVisualNoteEndpoint:
-    def test_set_and_read_back(self, logged_in_client, mock_radiometric):
+    def test_set_flag_and_note_together(self, logged_in_client, mock_radiometric):
         run_id, image_id = _upload_and_get_ids(logged_in_client)
         resp = logged_in_client.post(
-            f"/api/history/{run_id}/images/{image_id}/note", json={"note": "Cracked enclosure door"}
+            f"/api/history/{run_id}/images/{image_id}/note",
+            json={"note": "Cracked enclosure door", "anomaly": True},
         )
         assert resp.status_code == 200
-        assert resp.json()["visual_note"] == "Cracked enclosure door"
+        assert resp.json() == {"visual_note": "Cracked enclosure door", "visual_anomaly": True}
 
         detail = logged_in_client.get(f"/api/history/{run_id}").json()
         assert detail["images"][0]["visual_note"] == "Cracked enclosure door"
+        assert detail["images"][0]["visual_anomaly"] is True
 
-    def test_blank_note_clears_it(self, logged_in_client, mock_radiometric):
+    def test_note_without_flag_is_not_an_anomaly(self, logged_in_client, mock_radiometric):
+        # Text alone, with the checkbox unchecked, shouldn't flip the flag.
         run_id, image_id = _upload_and_get_ids(logged_in_client)
-        logged_in_client.post(f"/api/history/{run_id}/images/{image_id}/note", json={"note": "Something"})
-        resp = logged_in_client.post(f"/api/history/{run_id}/images/{image_id}/note", json={"note": "   "})
+        resp = logged_in_client.post(
+            f"/api/history/{run_id}/images/{image_id}/note",
+            json={"note": "Something worth mentioning but not an issue", "anomaly": False},
+        )
+        assert resp.json()["visual_anomaly"] is False
+
+    def test_flag_without_note_is_still_an_anomaly(self, logged_in_client, mock_radiometric):
+        run_id, image_id = _upload_and_get_ids(logged_in_client)
+        resp = logged_in_client.post(
+            f"/api/history/{run_id}/images/{image_id}/note", json={"anomaly": True}
+        )
         assert resp.status_code == 200
-        assert resp.json()["visual_note"] is None
+        assert resp.json() == {"visual_note": None, "visual_anomaly": True}
 
-    def test_omitted_note_clears_it(self, logged_in_client, mock_radiometric):
+    def test_omitting_anomaly_defaults_to_false(self, logged_in_client, mock_radiometric):
         run_id, image_id = _upload_and_get_ids(logged_in_client)
-        logged_in_client.post(f"/api/history/{run_id}/images/{image_id}/note", json={"note": "Something"})
         resp = logged_in_client.post(f"/api/history/{run_id}/images/{image_id}/note", json={})
-        assert resp.status_code == 200
-        assert resp.json()["visual_note"] is None
+        assert resp.json()["visual_anomaly"] is False
+
+    def test_blank_note_is_stored_as_none(self, logged_in_client, mock_radiometric):
+        run_id, image_id = _upload_and_get_ids(logged_in_client)
+        resp = logged_in_client.post(
+            f"/api/history/{run_id}/images/{image_id}/note", json={"note": "   ", "anomaly": True}
+        )
+        assert resp.json() == {"visual_note": None, "visual_anomaly": True}
 
     def test_wrong_run_id_404s(self, logged_in_client, mock_radiometric):
         run_id, image_id = _upload_and_get_ids(logged_in_client)
         resp = logged_in_client.post(
-            f"/api/history/{run_id + 999}/images/{image_id}/note", json={"note": "x"}
+            f"/api/history/{run_id + 999}/images/{image_id}/note", json={"anomaly": True}
         )
         assert resp.status_code == 404
 
@@ -63,38 +81,46 @@ class TestSetVisualNoteEndpoint:
         run_id, image_id = _upload_and_get_ids(logged_in_client)
         make_user("frank", role="viewer", password="password123")
         client.post("/api/login", data={"username": "frank", "password": "password123"})
-        resp = client.post(f"/api/history/{run_id}/images/{image_id}/note", json={"note": "x"})
+        resp = client.post(f"/api/history/{run_id}/images/{image_id}/note", json={"anomaly": True})
         assert resp.status_code == 403
 
 
-class TestHasFindingsIncludesNotes:
+class TestHasFindingsUsesTheFlagNotTheText:
     def _entry(self, **overrides):
         defaults = dict(
-            image_name="FLIR0001.jpg", annotated_image=None, hotspot_rows=[], ambient_c=20.0, comparative_rows=None, note=None
+            image_name="FLIR0001.jpg",
+            annotated_image=None,
+            hotspot_rows=[],
+            ambient_c=20.0,
+            comparative_rows=None,
+            note=None,
+            visual_anomaly=False,
         )
         defaults.update(overrides)
         return ImageReportEntry(**defaults)
 
-    def test_no_findings_no_note_is_excluded(self):
+    def test_nothing_flagged_is_excluded(self):
         assert _has_findings(self._entry()) is False
 
-    def test_note_alone_counts_as_a_finding(self):
-        assert _has_findings(self._entry(note="Cracked enclosure door")) is True
+    def test_flag_true_counts_as_a_finding_even_with_no_text(self):
+        assert _has_findings(self._entry(visual_anomaly=True)) is True
 
-    def test_empty_string_note_does_not_count(self):
-        # Matches the endpoint's own behavior of normalizing blank -> None.
-        assert _has_findings(self._entry(note="")) is False
+    def test_text_alone_without_the_flag_does_not_count(self):
+        # This is the exact behavior the user rejected: a description with
+        # no explicit anomaly flag must NOT pull the image into the report.
+        assert _has_findings(self._entry(note="Something worth mentioning", visual_anomaly=False)) is False
 
 
-class TestAuditReportIncludesNoteOnlyImages:
-    def test_pdf_audit_report_shows_the_note_text(self, tmp_path):
+class TestAuditReportRespectsTheFlag:
+    def test_pdf_report_includes_flagged_image_with_its_note(self, tmp_path):
         entries = [
             ImageReportEntry(
                 image_name="FLIR0001.jpg",
                 annotated_image=None,
-                hotspot_rows=[],  # no thermal findings at all
+                hotspot_rows=[],
                 ambient_c=20.0,
                 note="Visible corrosion on the bus bar connection",
+                visual_anomaly=True,
             )
         ]
         out_path = tmp_path / "report.pdf"
@@ -104,10 +130,32 @@ class TestAuditReportIncludesNoteOnlyImages:
         text = "\n".join(page.extract_text() for page in reader.pages)
         assert "FLIR0001.jpg" in text
         assert "Visible corrosion on the bus bar connection" in text
+        assert "Images with findings: 1" in text
 
-    def test_pdf_audit_report_omits_images_with_neither(self, tmp_path):
+    def test_pdf_report_flags_without_text_still_included(self, tmp_path):
         entries = [
-            ImageReportEntry(image_name="FLIR0002.jpg", annotated_image=None, hotspot_rows=[], ambient_c=20.0, note=None)
+            ImageReportEntry(
+                image_name="FLIR0003.jpg", annotated_image=None, hotspot_rows=[], ambient_c=20.0, visual_anomaly=True
+            )
+        ]
+        out_path = tmp_path / "report.pdf"
+        generate_audit_findings_report(entries, out_path)
+
+        reader = PdfReader(str(out_path))
+        text = "\n".join(page.extract_text() for page in reader.pages)
+        assert "FLIR0003.jpg" in text
+        assert "no description provided" in text.lower()
+
+    def test_pdf_report_omits_unflagged_image_even_with_a_note(self, tmp_path):
+        entries = [
+            ImageReportEntry(
+                image_name="FLIR0002.jpg",
+                annotated_image=None,
+                hotspot_rows=[],
+                ambient_c=20.0,
+                note="A description with no flag attached",
+                visual_anomaly=False,
+            )
         ]
         out_path = tmp_path / "report.pdf"
         generate_audit_findings_report(entries, out_path)
@@ -117,7 +165,7 @@ class TestAuditReportIncludesNoteOnlyImages:
         assert "FLIR0002.jpg" not in text
         assert "Images with findings: 0" in text
 
-    def test_gdocs_audit_report_includes_the_note(self):
+    def test_gdocs_report_includes_flagged_image_with_its_note(self):
         fake_docs = _FakeDocsService()
         fake_drive = _FakeDriveService()
         entries = [
@@ -127,16 +175,35 @@ class TestAuditReportIncludesNoteOnlyImages:
                 hotspot_rows=[],
                 ambient_c=20.0,
                 note="Visible corrosion on the bus bar connection",
+                visual_anomaly=True,
             )
         ]
         build_findings_doc(fake_docs, fake_drive, entries, folder_id="fake-folder", style="audit")
 
         all_text_inserts = [
-            req["insertText"]["text"]
-            for call in fake_docs.batch_calls
-            for req in call
-            if "insertText" in req
+            req["insertText"]["text"] for call in fake_docs.batch_calls for req in call if "insertText" in req
         ]
         joined = "".join(all_text_inserts)
         assert "FLIR0001.jpg" in joined
         assert "Visible corrosion on the bus bar connection" in joined
+
+    def test_gdocs_report_omits_unflagged_image_even_with_a_note(self):
+        fake_docs = _FakeDocsService()
+        fake_drive = _FakeDriveService()
+        entries = [
+            ImageReportEntry(
+                image_name="FLIR0002.jpg",
+                annotated_image=None,
+                hotspot_rows=[],
+                ambient_c=20.0,
+                note="A description with no flag attached",
+                visual_anomaly=False,
+            )
+        ]
+        build_findings_doc(fake_docs, fake_drive, entries, folder_id="fake-folder", style="audit")
+
+        all_text_inserts = [
+            req["insertText"]["text"] for call in fake_docs.batch_calls for req in call if "insertText" in req
+        ]
+        joined = "".join(all_text_inserts)
+        assert "FLIR0002.jpg" not in joined

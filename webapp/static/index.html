@@ -377,12 +377,12 @@ async function setExcludedHotspots(runId, imageId, indices) {
   return resp.json();
 }
 
-async function setVisualNote(runId, imageId, note) {
+async function setVisualNote(runId, imageId, note, anomaly) {
   const resp = await fetch(`/api/history/${runId}/images/${imageId}/note`, {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ note }),
+    body: JSON.stringify({ note, anomaly }),
   });
   if (!resp.ok) {
     const data = await resp.json().catch(() => ({}));
@@ -688,10 +688,13 @@ function renderResults(data) {
       : '';
 
     const noteHtml = `<div class="visual-note-block" style="margin-top: 0.75rem;">
-        <label style="display:block; font-size:0.85rem; color: var(--muted); margin-bottom:0.25rem;">Visual issue noted (non-thermal - e.g. physical damage, corrosion, a cracked enclosure)</label>
-        <textarea class="visual-note-input" data-image-id="${r.image_id}" rows="2" style="width:100%; max-width:520px; font-family:inherit;" placeholder="Describe what you observed..."></textarea>
+        <label style="display:flex; align-items:center; gap:0.4rem; font-size:0.85rem; color: var(--text); margin-bottom:0.35rem;">
+          <input type="checkbox" class="visual-anomaly-checkbox" data-image-id="${r.image_id}" />
+          Flag as visual anomaly (non-thermal - e.g. physical damage, corrosion, a cracked enclosure)
+        </label>
+        <textarea class="visual-note-input" data-image-id="${r.image_id}" rows="2" style="width:100%; max-width:520px; font-family:inherit;" placeholder="Optional: describe what you observed..."></textarea>
         <br/>
-        <button class="save-note-btn secondary" data-image-id="${r.image_id}" style="margin-top:0.35rem;">Save note</button>
+        <button class="save-note-btn secondary" data-image-id="${r.image_id}" style="margin-top:0.35rem;">Save</button>
         <span class="note-status" data-image-id="${r.image_id}" style="font-size:0.8rem; color: var(--muted); margin-left:0.5rem;"></span>
       </div>`;
 
@@ -736,11 +739,12 @@ function renderResults(data) {
       btn.addEventListener('click', async () => {
         const imageId = btn.dataset.imageId;
         const textarea = block.querySelector(`.visual-note-input[data-image-id="${imageId}"]`);
+        const checkbox = block.querySelector(`.visual-anomaly-checkbox[data-image-id="${imageId}"]`);
         const noteStatusEl = block.querySelector(`.note-status[data-image-id="${imageId}"]`);
         btn.disabled = true;
         noteStatusEl.textContent = 'Saving…';
         try {
-          await setVisualNote(currentRunId, imageId, textarea.value);
+          await setVisualNote(currentRunId, imageId, textarea.value, checkbox.checked);
           noteStatusEl.textContent = 'Saved.';
         } catch (err) {
           noteStatusEl.textContent = err.message;

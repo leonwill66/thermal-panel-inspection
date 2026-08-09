@@ -65,6 +65,7 @@ class AnalysisImage(Base):
     excluded_hotspot_indices: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list[int] - reviewer-dismissed false positives (indices into hotspots_json)
     annotate_scale: Mapped[int] = mapped_column(Integer, default=1)  # upscale factor used when the base was rendered - see thermal_inspector.annotate.compute_scale
     has_unannotated_base: Mapped[bool] = mapped_column(Boolean, default=False)  # False for images stored before this column existed - those already have hotspot boxes baked in and can't be redrawn
-    visual_note: Mapped[str | None] = mapped_column(Text, nullable=True)  # inspector-entered note on a visually-observed (non-thermal) issue, e.g. physical damage, corrosion, a cracked enclosure
+    visual_anomaly: Mapped[bool] = mapped_column(Boolean, default=False)  # explicit reviewer flag: a visible (non-thermal) issue was observed - drives report inclusion, unlike visual_note below
+    visual_note: Mapped[str | None] = mapped_column(Text, nullable=True)  # optional description of the flagged issue, e.g. "cracked enclosure door" - not itself a flag, see visual_anomaly
 
     run: Mapped["AnalysisRun"] = relationship(back_populates="images")
