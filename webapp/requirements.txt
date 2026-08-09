@@ -11,3 +11,8 @@ itsdangerous>=2.1
 psycopg2-binary>=2.9
 supabase>=2.0
 python-dotenv>=1.0
+
+# Only needed if GOOGLE_SERVICE_ACCOUNT_JSON is set (Google Docs export);
+# the app runs fine without it, that feature just 501s until configured.
+google-api-python-client>=2.100
+google-auth>=2.23

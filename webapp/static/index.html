@@ -273,6 +273,7 @@
     <div id="imageResults"></div>
     <div id="skippedBlock"></div>
     <button id="downloadBtn" class="secondary">Download PDF</button>
+    <button id="gdocBtn" class="secondary">Export to Google Docs</button>
     <span id="downloadStatus" style="color: var(--muted); font-size: 0.85rem; margin-left: 0.5rem;"></span>
   </div>
 </main>
@@ -289,6 +290,7 @@ const badgesEl = document.getElementById('badges');
 const imageResultsEl = document.getElementById('imageResults');
 const skippedBlockEl = document.getElementById('skippedBlock');
 const downloadBtn = document.getElementById('downloadBtn');
+const gdocBtn = document.getElementById('gdocBtn');
 const downloadStatusEl = document.getElementById('downloadStatus');
 
 const JPEG_RE = /\.jpe?g$/i;
@@ -525,12 +527,7 @@ analyzeBtn.addEventListener('click', async () => {
   }
 });
 
-downloadBtn.addEventListener('click', async () => {
-  if (!currentRunId) return;
-
-  downloadBtn.disabled = true;
-  downloadStatusEl.textContent = 'Generating PDF…';
-
+function buildReportFormData() {
   const form = new FormData();
   form.append('report_style', document.getElementById('reportStyle').value);
   const clientName = document.getElementById('clientName').value;
@@ -543,9 +540,17 @@ downloadBtn.addEventListener('click', async () => {
   if (inspectorName !== '') form.append('inspector_name', inspectorName);
   const reportId = document.getElementById('reportId').value;
   if (reportId !== '') form.append('report_id', reportId);
+  return form;
+}
+
+downloadBtn.addEventListener('click', async () => {
+  if (!currentRunId) return;
+
+  downloadBtn.disabled = true;
+  downloadStatusEl.textContent = 'Generating PDF…';
 
   try {
-    const resp = await fetch(`/api/history/${currentRunId}/report`, { method: 'POST', body: form, credentials: 'same-origin' });
+    const resp = await fetch(`/api/history/${currentRunId}/report`, { method: 'POST', body: buildReportFormData(), credentials: 'same-origin' });
     if (!resp.ok) {
       const data = await resp.json().catch(() => ({}));
       throw new Error(data.detail || 'Report generation failed');
@@ -568,6 +573,27 @@ downloadBtn.addEventListener('click', async () => {
     downloadStatusEl.textContent = err.message;
   } finally {
     downloadBtn.disabled = false;
+  }
+});
+
+gdocBtn.addEventListener('click', async () => {
+  if (!currentRunId) return;
+
+  gdocBtn.disabled = true;
+  downloadStatusEl.textContent = 'Exporting to Google Docs…';
+
+  try {
+    const resp = await fetch(`/api/history/${currentRunId}/report/gdoc`, { method: 'POST', body: buildReportFormData(), credentials: 'same-origin' });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail || 'Google Docs export failed');
+    }
+    window.open(data.doc_url, '_blank', 'noopener');
+    downloadStatusEl.textContent = 'Exported to Google Docs.';
+  } catch (err) {
+    downloadStatusEl.textContent = err.message;
+  } finally {
+    gdocBtn.disabled = false;
   }
 });
 

@@ -45,9 +45,10 @@ from thermal_inspector import (
 )
 from thermal_inspector.annotate import compute_scale, draw_hotspot_rows
 from thermal_inspector.core import find_comparative_anomalies
+from thermal_inspector.gdocs_report import build_findings_doc
 from thermal_inspector.report import comparative_to_rows, hotspots_to_rows, summarize
 
-from . import storage
+from . import gdocs, storage
 from .auth import get_current_user, get_session_secret, get_user_from_session, hash_password, require_role, verify_password
 from .db import get_db, init_db
 from .models import ROLES, AnalysisImage, AnalysisRun, User
@@ -490,24 +491,10 @@ def set_excluded_hotspots(
     }
 
 
-@app.post("/api/history/{run_id}/report")
-def report_from_history(
-    run_id: int,
-    report_style: str = Form("full"),
-    report_title: str | None = Form(None),
-    client_name: str | None = Form(None),
-    site_location: str | None = Form(None),
-    audit_date: str | None = Form(None),
-    inspector_name: str | None = Form(None),
-    report_id: str | None = Form(None),
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Build a PDF from an already-analyzed (and saved) run — no re-upload
-    needed. Available to any logged-in role, including viewer."""
-    if report_style not in ("full", "audit"):
-        raise HTTPException(status_code=422, detail="report_style must be 'full' or 'audit'")
-
+def _load_report_entries(run_id: int, db: Session) -> tuple[list[ImageReportEntry], list[tuple[str, str]]]:
+    """Shared by the PDF and Google Docs report endpoints: loads an
+    already-analyzed run's images into ImageReportEntry objects plus its
+    skipped-files list, or raises the same 404/422 either way."""
     run = db.get(AnalysisRun, run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -533,6 +520,28 @@ def report_from_history(
         raise HTTPException(status_code=422, detail="This run has no analyzable images to report on")
 
     skipped_pairs = [(s["filename"], s["reason"]) for s in json.loads(run.skipped_json)]
+    return entries, skipped_pairs
+
+
+@app.post("/api/history/{run_id}/report")
+def report_from_history(
+    run_id: int,
+    report_style: str = Form("full"),
+    report_title: str | None = Form(None),
+    client_name: str | None = Form(None),
+    site_location: str | None = Form(None),
+    audit_date: str | None = Form(None),
+    inspector_name: str | None = Form(None),
+    report_id: str | None = Form(None),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Build a PDF from an already-analyzed (and saved) run — no re-upload
+    needed. Available to any logged-in role, including viewer."""
+    if report_style not in ("full", "audit"):
+        raise HTTPException(status_code=422, detail="report_style must be 'full' or 'audit'")
+
+    entries, skipped_pairs = _load_report_entries(run_id, db)
     metadata = ReportMetadata(
         client_name=client_name,
         site_location=site_location,
@@ -563,6 +572,55 @@ def report_from_history(
     except Exception:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         raise
+
+
+@app.post("/api/history/{run_id}/report/gdoc")
+def gdoc_report_from_history(
+    run_id: int,
+    report_style: str = Form("full"),
+    report_title: str | None = Form(None),
+    client_name: str | None = Form(None),
+    site_location: str | None = Form(None),
+    audit_date: str | None = Form(None),
+    inspector_name: str | None = Form(None),
+    report_id: str | None = Form(None),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Same as report_from_history, but exports to a Google Doc in the
+    configured Shared Drive folder instead of a downloaded PDF, returning
+    {"doc_url": ...}. 501s if Google credentials aren't configured
+    (GOOGLE_SERVICE_ACCOUNT_JSON / GOOGLE_DRIVE_FOLDER_ID unset) so local dev
+    without them keeps working."""
+    if not gdocs.configured():
+        raise HTTPException(
+            status_code=501,
+            detail="Google Docs export isn't configured on this server (missing GOOGLE_SERVICE_ACCOUNT_JSON/GOOGLE_DRIVE_FOLDER_ID)",
+        )
+    if report_style not in ("full", "audit"):
+        raise HTTPException(status_code=422, detail="report_style must be 'full' or 'audit'")
+
+    entries, skipped_pairs = _load_report_entries(run_id, db)
+    metadata = ReportMetadata(
+        client_name=client_name,
+        site_location=site_location,
+        audit_date=audit_date,
+        inspector_name=inspector_name,
+        report_id=report_id,
+    )
+    default_title = "Thermal Inspection Findings" if report_style == "audit" else "Thermal Inspection Report"
+
+    doc_url = build_findings_doc(
+        gdocs.docs_service(),
+        gdocs.drive_service(),
+        entries,
+        gdocs.target_folder_id(),
+        style=report_style,
+        title=report_title or default_title,
+        excluded=skipped_pairs,
+        metadata=metadata,
+    )
+    return {"doc_url": doc_url}
 
 
 # ---------------------------------------------------------------------------
