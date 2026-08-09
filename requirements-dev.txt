@@ -1,0 +1,6 @@
+# Test/dev-only dependencies. Install with: pip install -r requirements-dev.txt
+-r requirements.txt
+-r webapp/requirements.txt
+
+pytest>=8.0
+httpx>=0.27
