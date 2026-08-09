@@ -37,6 +37,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 _COLUMN_MIGRATIONS = [
     ("analysis_images", "visual_note", "TEXT"),
     ("analysis_images", "visual_anomaly", "BOOLEAN NOT NULL DEFAULT FALSE"),
+    ("analysis_images", "raw_image_path", "TEXT"),
 ]
 
 

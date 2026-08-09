@@ -67,5 +67,25 @@ class AnalysisImage(Base):
     has_unannotated_base: Mapped[bool] = mapped_column(Boolean, default=False)  # False for images stored before this column existed - those already have hotspot boxes baked in and can't be redrawn
     visual_anomaly: Mapped[bool] = mapped_column(Boolean, default=False)  # explicit reviewer flag: a visible (non-thermal) issue was observed - drives report inclusion, unlike visual_note below
     visual_note: Mapped[str | None] = mapped_column(Text, nullable=True)  # optional description of the flagged issue, e.g. "cracked enclosure door" - not itself a flag, see visual_anomaly
+    raw_image_path: Mapped[str | None] = mapped_column(String(500), nullable=True)  # the original uploaded FLIR JPEG, kept (unlike the temp upload dir) so emissivity can be recomputed later - None for images analyzed before this existed
 
     run: Mapped["AnalysisRun"] = relationship(back_populates="images")
+
+
+class AuditLogEntry(Base):
+    """An append-only record of reviewer actions on a run/image - who
+    excluded a hotspot, flagged a visual anomaly, or overrode emissivity,
+    and when. Distinct from the mutable state itself (e.g.
+    AnalysisImage.excluded_hotspot_indices, which only reflects the
+    *current* set) - this is the history of how it got there."""
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("analysis_runs.id"))
+    image_id: Mapped[int | None] = mapped_column(ForeignKey("analysis_images.id"), nullable=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    username: Mapped[str] = mapped_column(String(64))  # denormalized: survives user deletion, same reasoning as AnalysisRun.created_by_username
+    action: Mapped[str] = mapped_column(String(64))  # e.g. "exclude_hotspots", "set_visual_anomaly", "emissivity_override"
+    detail_json: Mapped[str] = mapped_column(Text)  # action-specific dict, e.g. {"excluded_indices": [...]} or {"hotspot_index": 0, "old_emissivity": 0.95, "new_emissivity": 0.3}
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)

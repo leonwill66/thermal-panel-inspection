@@ -51,7 +51,7 @@ from thermal_inspector.report import comparative_to_rows, hotspots_to_rows, summ
 from . import gdocs, storage
 from .auth import get_current_user, get_session_secret, get_user_from_session, hash_password, require_role, verify_password
 from .db import get_db, init_db
-from .models import ROLES, AnalysisImage, AnalysisRun, User
+from .models import ROLES, AnalysisImage, AnalysisRun, AuditLogEntry, User
 
 init_db()
 
@@ -200,6 +200,22 @@ def _recompute_run_summary(run: AnalysisRun) -> None:
     hotspot rows. Call after changing an image's excluded set, before commit."""
     all_rows = [row for img in run.images for row in _effective_hotspot_rows(img)]
     run.summary_json = json.dumps(summarize(all_rows))
+
+
+def _log_audit(db: Session, *, run_id: int, image_id: int | None, user: User, action: str, detail: dict) -> None:
+    """Appends an audit-log entry. Doesn't commit - callers already commit
+    their own change in the same transaction; add this call before that
+    commit so both land atomically."""
+    db.add(
+        AuditLogEntry(
+            run_id=run_id,
+            image_id=image_id,
+            user_id=user.id,
+            username=user.username,
+            action=action,
+            detail_json=json.dumps(detail),
+        )
+    )
 
 
 def _placeholder_image_bytes(message: str) -> bytes:
@@ -479,8 +495,19 @@ def set_excluded_hotspots(
     if any(i < 0 or i >= total for i in hotspot_indices):
         raise HTTPException(status_code=422, detail=f"hotspot_indices must be in range [0, {total})")
 
-    img.excluded_hotspot_indices = json.dumps(sorted(set(hotspot_indices)))
+    before = sorted(_excluded_indices(img))
+    after = sorted(set(hotspot_indices))
+    img.excluded_hotspot_indices = json.dumps(after)
     _recompute_run_summary(img.run)
+    if before != after:
+        _log_audit(
+            db,
+            run_id=run_id,
+            image_id=image_id,
+            user=user,
+            action="exclude_hotspots",
+            detail={"before": before, "after": after},
+        )
     db.commit()
 
     excluded = _excluded_indices(img)
@@ -513,7 +540,20 @@ def set_visual_note(
     if not img or img.run_id != run_id:
         raise HTTPException(status_code=404, detail="Image not found")
 
-    img.visual_note = note.strip() if note and note.strip() else None
+    new_note = note.strip() if note and note.strip() else None
+    if (img.visual_note, img.visual_anomaly) != (new_note, anomaly):
+        _log_audit(
+            db,
+            run_id=run_id,
+            image_id=image_id,
+            user=user,
+            action="set_visual_anomaly",
+            detail={
+                "before": {"visual_note": img.visual_note, "visual_anomaly": img.visual_anomaly},
+                "after": {"visual_note": new_note, "visual_anomaly": anomaly},
+            },
+        )
+    img.visual_note = new_note
     img.visual_anomaly = anomaly
     db.commit()
     return {"visual_note": img.visual_note, "visual_anomaly": img.visual_anomaly}
@@ -698,6 +738,33 @@ def get_history_run(run_id: int, user: User = Depends(get_current_user), db: Ses
             }
             for img in run.images
         ],
+    }
+
+
+@app.get("/api/history/{run_id}/audit-log")
+def get_audit_log(run_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Who changed what on this run, and when - available to any logged-in
+    role, same as browsing the run itself. Newest first."""
+    if not db.get(AnalysisRun, run_id):
+        raise HTTPException(status_code=404, detail="Run not found")
+    entries = (
+        db.query(AuditLogEntry)
+        .filter(AuditLogEntry.run_id == run_id)
+        .order_by(AuditLogEntry.created_at.desc())
+        .all()
+    )
+    return {
+        "entries": [
+            {
+                "id": e.id,
+                "image_id": e.image_id,
+                "username": e.username,
+                "action": e.action,
+                "detail": json.loads(e.detail_json),
+                "created_at": e.created_at.isoformat(),
+            }
+            for e in entries
+        ]
     }
 
 

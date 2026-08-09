@@ -144,6 +144,11 @@
     <button id="downloadBtn" style="margin-top: 1rem; background: var(--accent); color: #04121f; border: none; border-radius: 6px; padding: 0.6rem 1.2rem; font-weight: 600;">Download PDF</button>
     <button id="gdocBtn" class="secondary" style="margin-top: 1rem;">Export to Google Docs</button>
     <span id="downloadStatus" style="color: var(--muted); font-size: 0.85rem; margin-left: 0.5rem;"></span>
+
+    <details style="margin-top: 1.5rem;">
+      <summary style="cursor:pointer; text-transform: uppercase; font-size: 0.75rem; color: var(--muted); letter-spacing:0.04em;">Activity log</summary>
+      <div id="auditLog" style="margin-top: 0.75rem; font-size: 0.85rem;"></div>
+    </details>
   </div>
 </main>
 
@@ -367,6 +372,41 @@ async function showDetail(runId) {
   if (run.skipped.length) {
     skippedEl.innerHTML = '<b style="color: var(--text);">Skipped files</b><br>' +
       run.skipped.map((s) => `<b>${escapeHtml(s.filename)}:</b> ${escapeHtml(s.reason)}`).join('<br>');
+  }
+
+  loadAuditLog(run.id);
+}
+
+function describeAuditEntry(entry) {
+  const when = new Date(entry.created_at).toLocaleString();
+  const who = escapeHtml(entry.username);
+  const d = entry.detail || {};
+  let what;
+  if (entry.action === 'exclude_hotspots') {
+    what = `changed excluded findings from [${(d.before || []).join(', ')}] to [${(d.after || []).join(', ')}]`;
+  } else if (entry.action === 'set_visual_anomaly') {
+    const after = d.after || {};
+    what = after.visual_anomaly
+      ? `flagged a visual anomaly${after.visual_note ? `: "${escapeHtml(after.visual_note)}"` : ''}`
+      : 'cleared the visual anomaly flag';
+  } else {
+    what = escapeHtml(entry.action);
+  }
+  return `<div style="padding: 0.35rem 0; border-bottom: 1px solid var(--border);"><span style="color: var(--muted);">${when}</span> — <b>${who}</b> ${what}${entry.image_id ? ` <span style="color: var(--muted);">(image #${entry.image_id})</span>` : ''}</div>`;
+}
+
+async function loadAuditLog(runId) {
+  const el = document.getElementById('auditLog');
+  el.textContent = 'Loading…';
+  try {
+    const resp = await fetch(`/api/history/${runId}/audit-log`, { credentials: 'same-origin' });
+    if (!resp.ok) throw new Error('Failed to load activity log');
+    const data = await resp.json();
+    el.innerHTML = data.entries.length
+      ? data.entries.map(describeAuditEntry).join('')
+      : '<span style="color: var(--muted);">No reviewer changes recorded for this run.</span>';
+  } catch (err) {
+    el.textContent = err.message;
   }
 }
 
