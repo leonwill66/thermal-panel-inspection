@@ -1,5 +1,7 @@
 # thermal-panel-inspector
 
+[![Tests](https://github.com/leonwill66/thermal-panel-inspection/actions/workflows/test.yml/badge.svg)](https://github.com/leonwill66/thermal-panel-inspection/actions/workflows/test.yml)
+
 Detects and severity-classifies thermal anomalies (hotspots) in radiometric FLIR
 images of electrical panels and systems — loose connections, overloaded circuits,
 failing breakers, imbalanced phases, etc.
