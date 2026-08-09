@@ -10,6 +10,7 @@ from thermal_inspector.core import (
     find_comparative_anomalies,
     find_hotspots,
     load_adjusted_delta_t,
+    load_radiometric_with_emissivity,
 )
 
 
@@ -155,3 +156,34 @@ class TestClassifyComparativeSeverity:
         assert classify_comparative_severity(1.0) == "comparative_possible"
         assert classify_comparative_severity(4.0) == "comparative_probable"
         assert classify_comparative_severity(15.0) == "comparative_major"
+
+
+class TestLoadRadiometricWithEmissivityValidation:
+    """Only the input-validation paths - actually decoding a radiometric
+    file needs a real one (or flyr internals mocked deeply enough that it
+    wouldn't prove much); that end-to-end behavior is instead exercised
+    indirectly via the recompute endpoint tests, which mock this whole
+    function at the boundary."""
+
+    def test_missing_file_raises_file_not_found(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            load_radiometric_with_emissivity(tmp_path / "does_not_exist.jpg", 0.5)
+
+    @pytest.mark.parametrize("bad_emissivity", [0.0, -0.1, 1.1, 5.0])
+    def test_out_of_range_emissivity_raises(self, tmp_path, bad_emissivity):
+        # Existence check happens before emissivity validation, so this
+        # needs a real (if empty/invalid-as-FLIR) file to reach it.
+        dummy = tmp_path / "dummy.jpg"
+        dummy.write_bytes(b"not a real flir file")
+        with pytest.raises(ValueError, match="emissivity"):
+            load_radiometric_with_emissivity(dummy, bad_emissivity)
+
+    def test_valid_emissivity_boundary_does_not_raise_for_range_reason(self, tmp_path):
+        # emissivity=1.0 is the valid upper boundary - this file will still
+        # fail at the flyr-unpack step (it's not real FLIR data), but that
+        # ValueError's text should be about the file, not the emissivity.
+        dummy = tmp_path / "dummy.jpg"
+        dummy.write_bytes(b"not a real flir file")
+        with pytest.raises(ValueError) as exc_info:
+            load_radiometric_with_emissivity(dummy, 1.0)
+        assert "emissivity" not in str(exc_info.value)

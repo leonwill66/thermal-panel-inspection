@@ -57,14 +57,18 @@ def using_supabase() -> bool:
     return _client is not None
 
 
-def save_image(relative_path: str, data: bytes) -> None:
+def save_image(relative_path: str, data: bytes, content_type: str = "image/png") -> None:
     """relative_path is e.g. '12/0000_FLIR0893.jpg.png' - the same value
-    stored in AnalysisImage.annotated_image_path."""
+    stored in AnalysisImage.annotated_image_path. content_type defaults to
+    png (every caller originally only ever stored derived PNG renderings);
+    pass e.g. 'image/jpeg' when storing the original radiometric file
+    itself (see AnalysisImage.raw_image_path) - local disk storage ignores
+    this, but Supabase Storage serves whatever content-type it was given."""
     if _client is not None:
         _client.storage.from_(_BUCKET).upload(
             relative_path,
             data,
-            file_options={"content-type": "image/png", "upsert": "true"},
+            file_options={"content-type": content_type, "upsert": "true"},
         )
     else:
         dest = RUNS_DIR / relative_path

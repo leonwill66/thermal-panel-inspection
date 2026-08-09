@@ -60,19 +60,13 @@ class Thermogram:
     visual: Optional[np.ndarray] = field(default=None)  # embedded optical photo, BGR, if present
 
 
-def load_radiometric(path: str | Path) -> Thermogram:
-    """Extract the per-pixel temperature array from a radiometric FLIR JPEG.
-
-    Raises FileNotFoundError if the path doesn't exist, and ValueError if the
-    file has no embedded radiometric data (e.g. it's a plain photo, or the
-    camera's raw format needs exiftool on PATH and extraction failed).
-    """
-    path = Path(path)
-    if not path.exists():
-        raise FileNotFoundError(f"No such file: {path}")
-
+def _unpack_flyr(path: Path):
+    """flyr.unpack(), with the failure modes translated into the same
+    ValueError text load_radiometric has always raised - shared by
+    load_radiometric and load_radiometric_with_emissivity so both give
+    identical error messages for the same bad input."""
     try:
-        thermogram = flyr.unpack(str(path))
+        return flyr.unpack(str(path))
     except KeyError:
         # FLIR cameras often export a paired non-radiometric visual-only photo
         # alongside each thermal capture (same APP1 FLIR block, but missing the
@@ -89,15 +83,73 @@ def load_radiometric(path: str | Path) -> Thermogram:
             "that 'exiftool' is on PATH if your camera model requires it."
         ) from exc
 
-    temp_c = thermogram.celsius.astype(np.float32)
 
-    visual = None
+def _extract_visual(thermogram) -> Optional[np.ndarray]:
     try:
         optical = thermogram.optical
         if optical is not None:
-            visual = cv2.cvtColor(np.array(optical), cv2.COLOR_RGB2BGR)
+            return cv2.cvtColor(np.array(optical), cv2.COLOR_RGB2BGR)
     except Exception:
-        visual = None
+        pass
+    return None
+
+
+def load_radiometric(path: str | Path) -> Thermogram:
+    """Extract the per-pixel temperature array from a radiometric FLIR JPEG.
+
+    Raises FileNotFoundError if the path doesn't exist, and ValueError if the
+    file has no embedded radiometric data (e.g. it's a plain photo, or the
+    camera's raw format needs exiftool on PATH and extraction failed).
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"No such file: {path}")
+
+    thermogram = _unpack_flyr(path)
+    temp_c = thermogram.celsius.astype(np.float32)
+    visual = _extract_visual(thermogram)
+
+    return Thermogram(source_path=path, temperature_c=temp_c, visual=visual)
+
+
+def load_radiometric_with_emissivity(
+    path: str | Path,
+    emissivity: float,
+    reflected_apparent_temperature: Optional[float] = None,
+) -> Thermogram:
+    """Like load_radiometric, but recomputes temperature using a different
+    emissivity than whatever was set in-camera at capture time.
+
+    This matters because a camera is typically set to one emissivity for an
+    entire shoot, usually tuned for painted enclosure surfaces (~0.95) - but
+    bare or tarnished metal connections (bus bars, lugs) have much lower
+    emissivity (~0.3-0.5), and reading them at the wrong (too high)
+    emissivity systematically *under-reports* their true temperature. This
+    uses flyr's adjust_metadata(), which redoes the full Planck-law
+    radiometric correction from the camera's raw sensor data rather than
+    approximating it - the raw data has to still be available (flyr.unpack()
+    needs the original FLIR file, not a rendered/colorized copy of it).
+
+    reflected_apparent_temperature, if given, also overrides the reflected-
+    temperature correction (a different-emissivity surface reflects its
+    surroundings differently too); left at the camera's original setting if
+    omitted, which is usually fine unless the component is notably
+    reflective.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"No such file: {path}")
+    if not (0.0 < emissivity <= 1.0):
+        raise ValueError(f"emissivity must be in (0, 1], got {emissivity}")
+
+    thermogram = _unpack_flyr(path)
+    adjustments: dict[str, float] = {"emissivity": emissivity}
+    if reflected_apparent_temperature is not None:
+        adjustments["reflected_apparent_temperature"] = reflected_apparent_temperature
+    adjusted = thermogram.adjust_metadata(**adjustments)
+
+    temp_c = adjusted.celsius.astype(np.float32)
+    visual = _extract_visual(thermogram)
 
     return Thermogram(source_path=path, temperature_c=temp_c, visual=visual)
 

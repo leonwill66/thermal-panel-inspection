@@ -205,6 +205,20 @@ async function setVisualNote(runId, imageId, note, anomaly) {
   return resp.json();
 }
 
+async function setEmissivityOverride(runId, imageId, hotspotIndex, emissivity) {
+  const resp = await fetch(`/api/history/${runId}/images/${imageId}/recompute-emissivity`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hotspot_index: hotspotIndex, emissivity }),
+  });
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => ({}));
+    throw new Error(data.detail || 'Failed to recompute');
+  }
+  return resp.json();
+}
+
 function badgesHtml(summary) {
   const counts = summary.counts_by_severity || {};
   const parts = SEVERITY_ORDER.filter((s) => counts[s]).map(
@@ -263,7 +277,7 @@ async function showDetail(runId) {
     const showLoad = img.hotspots.some((h) => h.delta_t_corrected_c !== null && h.delta_t_corrected_c !== undefined);
     const rowsHtml = img.hotspots.length
       ? `<table class="hotspots">
-          <thead><tr>${canReview ? '<th>Not a fault</th>' : ''}<th>Severity</th><th>ΔT (°C)</th>${showLoad ? '<th>ΔT @ 100% load (°C)</th>' : ''}<th>Max (°C)</th><th>Mean (°C)</th><th>Area (px)</th><th>BBox</th></tr></thead>
+          <thead><tr>${canReview ? '<th>Not a fault</th>' : ''}<th>Severity</th><th>ΔT (°C)</th>${showLoad ? '<th>ΔT @ 100% load (°C)</th>' : ''}<th>Max (°C)</th><th>Mean (°C)</th><th>Area (px)</th><th>BBox</th>${canReview && img.can_recompute_emissivity ? '<th>Emissivity</th>' : ''}</tr></thead>
           <tbody>
             ${img.hotspots.map((h, i) => `
               <tr class="${h.excluded ? 'hotspot-excluded' : ''}">
@@ -273,10 +287,15 @@ async function showDetail(runId) {
                 <td>${h.max_temp_c}</td>
                 <td>${h.mean_temp_c}</td><td>${h.area_px}</td>
                 <td>${h.bbox_x}, ${h.bbox_y}, ${h.bbox_w}, ${h.bbox_h}</td>
+                ${canReview && img.can_recompute_emissivity ? `
+                <td style="white-space:nowrap;">
+                  <input type="number" class="emissivity-input" data-image-id="${img.id}" data-index="${i}" min="0.01" max="1" step="0.01" value="${h.emissivity_override ?? ''}" placeholder="e.g. 0.3" style="width:4.5rem;" />
+                  <button class="recompute-btn secondary" data-image-id="${img.id}" data-index="${i}" style="padding:0.2rem 0.5rem; font-size:0.78rem;">Recompute</button>
+                </td>` : ''}
               </tr>`).join('')}
           </tbody>
         </table>
-        ${canReview ? `<p class="exclude-hint">Check "Not a fault" for anything that isn't a real electrical issue (a tool left in frame, bare reflective metal, etc.) - it's dropped from reports and counts${img.image_updates_on_exclude ? ', and the box is removed from the picture' : ''}.</p>` : ''}`
+        ${canReview ? `<p class="exclude-hint">Check "Not a fault" for anything that isn't a real electrical issue (a tool left in frame, bare reflective metal, etc.) - it's dropped from reports and counts${img.image_updates_on_exclude ? ', and the box is removed from the picture' : ''}.${img.can_recompute_emissivity ? ' Bare/tarnished metal reads artificially cool at a painted-surface emissivity (~0.95) - enter a lower value (~0.3-0.5) and Recompute to correct it.' : ''}</p>` : ''}`
       : `<p style="color: var(--muted); margin: 0.25rem 0 0;">No anomalies detected.</p>`;
 
     const comparative = img.comparative || [];
@@ -343,6 +362,30 @@ async function showDetail(runId) {
           statusEl.textContent = err.message;
         } finally {
           btn.disabled = false;
+        }
+      });
+    });
+
+    block.querySelectorAll('.recompute-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const imageId = btn.dataset.imageId;
+        const index = Number(btn.dataset.index);
+        const input = block.querySelector(`.emissivity-input[data-image-id="${imageId}"][data-index="${index}"]`);
+        const emissivity = Number(input.value);
+        if (!emissivity || emissivity <= 0 || emissivity > 1) {
+          alert('Enter an emissivity between 0.01 and 1.');
+          return;
+        }
+        btn.disabled = true;
+        const originalText = btn.textContent;
+        btn.textContent = '…';
+        try {
+          await setEmissivityOverride(run.id, imageId, index, emissivity);
+          await showDetail(run.id);
+        } catch (err) {
+          alert(err.message);
+          btn.disabled = false;
+          btn.textContent = originalText;
         }
       });
     });

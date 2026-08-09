@@ -38,10 +38,12 @@ from thermal_inspector import (
     ImageReportEntry,
     ReportMetadata,
     annotate_image,
+    classify_severity,
     find_hotspots,
     generate_audit_findings_report,
     generate_pdf_report,
     load_radiometric,
+    load_radiometric_with_emissivity,
 )
 from thermal_inspector.annotate import compute_scale, draw_hotspot_rows
 from thermal_inspector.core import find_comparative_anomalies
@@ -436,6 +438,15 @@ async def analyze(
             if visual_bytes is not None:
                 visual_path = f"{run.id}/{stored_name}.photo.png"
                 storage.save_image(visual_path, visual_bytes)
+            # The original radiometric file itself - not just a rendering of
+            # it - so a reviewer can later recompute temperature at a
+            # different emissivity (thermal_inspector.core.load_radiometric
+            # needs the raw FLIR bytes, not the derived PNG, for that).
+            # upload_path may already be gone by the time this runs if the
+            # file failed to encode above, but reaching this point means it
+            # was read successfully, so it's still on disk in tmp_dir.
+            raw_path = f"{run.id}/{stored_name}.raw{Path(image_name).suffix or '.jpg'}"
+            storage.save_image(raw_path, upload_path.read_bytes(), content_type="image/jpeg")
             image_row = AnalysisImage(
                 run_id=run.id,
                 filename=image_name,
@@ -446,6 +457,7 @@ async def analyze(
                 visual_image_path=visual_path,
                 annotate_scale=scale,
                 has_unannotated_base=True,
+                raw_image_path=raw_path,
             )
             db.add(image_row)
             db.flush()  # assigns image_row.id
@@ -557,6 +569,101 @@ def set_visual_note(
     img.visual_anomaly = anomaly
     db.commit()
     return {"visual_note": img.visual_note, "visual_anomaly": img.visual_anomaly}
+
+
+@app.post("/api/history/{run_id}/images/{image_id}/recompute-emissivity")
+def recompute_emissivity(
+    run_id: int,
+    image_id: int,
+    hotspot_index: int = Body(..., embed=True),
+    emissivity: float = Body(..., embed=True),
+    reflected_apparent_temperature: float | None = Body(None, embed=True),
+    user: User = Depends(require_role("admin", "inspector")),
+    db: Session = Depends(get_db),
+):
+    """Re-derives one hotspot's max/mean temperature at a different
+    emissivity than the camera used at capture time - see
+    thermal_inspector.core.load_radiometric_with_emissivity for why this
+    matters (bare/tarnished metal reads artificially cool at a painted-
+    surface emissivity). Needs the original radiometric file, which is only
+    available for images analyzed after raw_image_path started being
+    stored - older runs 422 with a message explaining that instead of a
+    generic 404/500.
+
+    Deliberately does NOT recompute ambient_c: the override emissivity is
+    specific to this component's material, and reapplying it across the
+    whole frame would incorrectly recolor the (differently-emissive)
+    surrounding enclosure too. The existing ambient_c on the row - computed
+    at the camera's original setting, appropriate for the general enclosure
+    surface - stays as the reference point; only the flagged region's own
+    max/mean move to reflect the corrected material.
+
+    Overwrites the hotspot row in place, same as excluding a finding does -
+    everything downstream (reports, summaries) picks up the corrected
+    values automatically, no separate code path needed."""
+    img = db.get(AnalysisImage, image_id)
+    if not img or img.run_id != run_id:
+        raise HTTPException(status_code=404, detail="Image not found")
+    if not img.raw_image_path:
+        raise HTTPException(
+            status_code=422,
+            detail="This image predates raw-file storage and can't be recomputed - re-upload it to enable emissivity override.",
+        )
+
+    rows = json.loads(img.hotspots_json)
+    if hotspot_index < 0 or hotspot_index >= len(rows):
+        raise HTTPException(status_code=422, detail=f"hotspot_index must be in range [0, {len(rows)})")
+
+    raw_bytes = storage.load_image(img.raw_image_path)
+    if raw_bytes is None:
+        raise HTTPException(status_code=422, detail="Original radiometric file is unavailable (lost from storage)")
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="thermal_recompute_"))
+    try:
+        tmp_path = tmp_dir / "raw.jpg"
+        tmp_path.write_bytes(raw_bytes)
+        try:
+            thermogram = load_radiometric_with_emissivity(tmp_path, emissivity, reflected_apparent_temperature)
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    row = rows[hotspot_index]
+    x, y, w, h = row["bbox_x"], row["bbox_y"], row["bbox_w"], row["bbox_h"]
+    height, width = thermogram.temperature_c.shape[:2]
+    if x < 0 or y < 0 or x + w > width or y + h > height:
+        raise HTTPException(status_code=422, detail="Hotspot bounding box is out of range for this image")
+    region = thermogram.temperature_c[y : y + h, x : x + w]
+    new_max = float(region.max())
+    new_mean = float(region.mean())
+    new_delta = new_max - row["ambient_c"]
+
+    old_row = dict(row)
+    row["max_temp_c"] = round(new_max, 2)
+    row["mean_temp_c"] = round(new_mean, 2)
+    row["delta_t_c"] = round(new_delta, 2)
+    row["severity"] = classify_severity(new_delta)
+    row["emissivity_override"] = emissivity
+
+    rows[hotspot_index] = row
+    img.hotspots_json = json.dumps(rows)
+    _recompute_run_summary(img.run)
+    _log_audit(
+        db,
+        run_id=run_id,
+        image_id=image_id,
+        user=user,
+        action="emissivity_override",
+        detail={"hotspot_index": hotspot_index, "before": old_row, "after": row},
+    )
+    db.commit()
+
+    excluded = _excluded_indices(img)
+    return {
+        "hotspots": [{**r, "excluded": i in excluded} for i, r in enumerate(rows)],
+        "run_summary": json.loads(img.run.summary_json),
+    }
 
 
 def _load_report_entries(run_id: int, db: Session) -> tuple[list[ImageReportEntry], list[tuple[str, str]]]:
@@ -735,6 +842,7 @@ def get_history_run(run_id: int, user: User = Depends(get_current_user), db: Ses
                 "image_updates_on_exclude": img.has_unannotated_base,
                 "visual_note": img.visual_note,
                 "visual_anomaly": img.visual_anomaly,
+                "can_recompute_emissivity": img.raw_image_path is not None,
             }
             for img in run.images
         ],

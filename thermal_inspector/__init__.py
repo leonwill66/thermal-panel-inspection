@@ -1,6 +1,7 @@
 from .core import (
     Hotspot,
     load_radiometric,
+    load_radiometric_with_emissivity,
     find_hotspots,
     classify_severity,
     DEFAULT_THRESHOLDS,
@@ -17,6 +18,7 @@ from .pdf_report import (
 __all__ = [
     "Hotspot",
     "load_radiometric",
+    "load_radiometric_with_emissivity",
     "find_hotspots",
     "classify_severity",
     "DEFAULT_THRESHOLDS",
