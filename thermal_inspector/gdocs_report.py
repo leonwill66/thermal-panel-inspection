@@ -437,6 +437,9 @@ def build_findings_doc(
                     builder.paragraph("Comparative findings", heading="HEADING_3")
                     builder.table(_COMPARATIVE_COLUMNS, _with_bbox_location(flagged_comparative), COMPARATIVE_ROW_COLORS)
 
+                if entry.note:
+                    builder.rich_paragraph([("Visual issue noted: ", True), (entry.note, False)])
+
     else:  # style == "full"
         total_hotspots = sum(len(e.hotspot_rows) for e in entries)
         counts = {}

@@ -491,6 +491,30 @@ def set_excluded_hotspots(
     }
 
 
+@app.post("/api/history/{run_id}/images/{image_id}/note")
+def set_visual_note(
+    run_id: int,
+    image_id: int,
+    note: str | None = Body(None, embed=True),
+    user: User = Depends(require_role("admin", "inspector")),
+    db: Session = Depends(get_db),
+):
+    """Records (or clears, if note is blank/omitted) an inspector-entered
+    note about a visually-observed issue that thermal detection wouldn't
+    catch - physical damage, corrosion, a cracked enclosure, etc. Unlike
+    hotspot findings this isn't detected automatically, so there's nothing
+    to recompute here - just persisted and, from generate_audit_findings_report
+    onward, enough on its own to keep the image from being treated as
+    'clean' and dropped from the client-facing audit report."""
+    img = db.get(AnalysisImage, image_id)
+    if not img or img.run_id != run_id:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    img.visual_note = note.strip() if note and note.strip() else None
+    db.commit()
+    return {"visual_note": img.visual_note}
+
+
 def _load_report_entries(run_id: int, db: Session) -> tuple[list[ImageReportEntry], list[tuple[str, str]]]:
     """Shared by the PDF and Google Docs report endpoints: loads an
     already-analyzed run's images into ImageReportEntry objects plus its
@@ -514,6 +538,7 @@ def _load_report_entries(run_id: int, db: Session) -> tuple[list[ImageReportEntr
                 ambient_c=img.ambient_c,
                 comparative_rows=json.loads(img.comparative_json) if img.comparative_json else None,
                 visual_image=visual_bytes,
+                note=img.visual_note,
             )
         )
     if not entries:
@@ -663,6 +688,7 @@ def get_history_run(run_id: int, user: User = Depends(get_current_user), db: Ses
                 "image_url": f"/api/history/{run.id}/image/{img.id}",
                 "photo_url": f"/api/history/{run.id}/photo/{img.id}" if img.visual_image_path else None,
                 "image_updates_on_exclude": img.has_unannotated_base,
+                "visual_note": img.visual_note,
             }
             for img in run.images
         ],

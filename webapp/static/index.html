@@ -297,6 +297,12 @@ const JPEG_RE = /\.jpe?g$/i;
 let selectedFiles = [];
 let currentRunId = null;
 
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str ?? '';
+  return div.innerHTML;
+}
+
 document.getElementById('logoutBtn').addEventListener('click', async () => {
   await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
   window.location.href = '/login';
@@ -367,6 +373,20 @@ async function setExcludedHotspots(runId, imageId, indices) {
   if (!resp.ok) {
     const data = await resp.json().catch(() => ({}));
     throw new Error(data.detail || 'Failed to update finding');
+  }
+  return resp.json();
+}
+
+async function setVisualNote(runId, imageId, note) {
+  const resp = await fetch(`/api/history/${runId}/images/${imageId}/note`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note }),
+  });
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => ({}));
+    throw new Error(data.detail || 'Failed to save note');
   }
   return resp.json();
 }
@@ -654,7 +674,7 @@ function renderResults(data) {
           <tbody>
             ${comparative.map((c) => `
               <tr>
-                <td>${c.label}</td>
+                <td>${escapeHtml(c.label)}</td>
                 <td>${c.severity || 'baseline / no flag'}</td>
                 <td>${c.delta_t_c}</td>
                 <td>${c.max_temp_c}</td>
@@ -664,18 +684,27 @@ function renderResults(data) {
       : '';
 
     const photoHtml = r.visual_image_png_base64
-      ? `<figure><figcaption>Visual photo</figcaption><img src="data:image/png;base64,${r.visual_image_png_base64}" alt="Visual photo of ${r.filename}" /></figure>`
+      ? `<figure><figcaption>Visual photo</figcaption><img src="data:image/png;base64,${r.visual_image_png_base64}" alt="Visual photo of ${escapeHtml(r.filename)}" /></figure>`
       : '';
 
+    const noteHtml = `<div class="visual-note-block" style="margin-top: 0.75rem;">
+        <label style="display:block; font-size:0.85rem; color: var(--muted); margin-bottom:0.25rem;">Visual issue noted (non-thermal - e.g. physical damage, corrosion, a cracked enclosure)</label>
+        <textarea class="visual-note-input" data-image-id="${r.image_id}" rows="2" style="width:100%; max-width:520px; font-family:inherit;" placeholder="Describe what you observed..."></textarea>
+        <br/>
+        <button class="save-note-btn secondary" data-image-id="${r.image_id}" style="margin-top:0.35rem;">Save note</button>
+        <span class="note-status" data-image-id="${r.image_id}" style="font-size:0.8rem; color: var(--muted); margin-left:0.5rem;"></span>
+      </div>`;
+
     block.innerHTML = `
-      <h3>${r.filename}</h3>
+      <h3>${escapeHtml(r.filename)}</h3>
       <p class="image-meta">Ambient reference: ${r.ambient_c}°C</p>
       <div class="image-pair">
-        <figure><figcaption>Thermal</figcaption><img id="thermal-img-${r.image_id}" src="data:image/png;base64,${r.annotated_image_png_base64}" alt="Annotated thermal image of ${r.filename}" /></figure>
+        <figure><figcaption>Thermal</figcaption><img id="thermal-img-${r.image_id}" src="data:image/png;base64,${r.annotated_image_png_base64}" alt="Annotated thermal image of ${escapeHtml(r.filename)}" /></figure>
         ${photoHtml}
       </div>
       ${rowsHtml}
       ${comparativeHtml}
+      ${noteHtml}
     `;
     imageResultsEl.appendChild(block);
 
@@ -702,6 +731,24 @@ function renderResults(data) {
         }
       });
     });
+
+    block.querySelectorAll('.save-note-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const imageId = btn.dataset.imageId;
+        const textarea = block.querySelector(`.visual-note-input[data-image-id="${imageId}"]`);
+        const noteStatusEl = block.querySelector(`.note-status[data-image-id="${imageId}"]`);
+        btn.disabled = true;
+        noteStatusEl.textContent = 'Saving…';
+        try {
+          await setVisualNote(currentRunId, imageId, textarea.value);
+          noteStatusEl.textContent = 'Saved.';
+        } catch (err) {
+          noteStatusEl.textContent = err.message;
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    });
   });
 
   skippedBlockEl.innerHTML = '';
@@ -711,7 +758,7 @@ function renderResults(data) {
     skippedBlockEl.appendChild(heading);
     data.skipped.forEach((s) => {
       const line = document.createElement('div');
-      line.innerHTML = `<b>${s.filename}:</b> ${s.reason}`;
+      line.innerHTML = `<b>${escapeHtml(s.filename)}:</b> ${escapeHtml(s.reason)}`;
       skippedBlockEl.appendChild(line);
     });
   }

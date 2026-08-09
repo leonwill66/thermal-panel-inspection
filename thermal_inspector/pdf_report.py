@@ -227,6 +227,8 @@ def _comparative_narrative(all_comparative_rows: list[dict]) -> str | None:
 def _has_findings(entry: ImageReportEntry) -> bool:
     if entry.hotspot_rows:
         return True
+    if entry.note:
+        return True
     return any(row.get("severity") for row in (entry.comparative_rows or []))
 
 
@@ -304,7 +306,10 @@ def generate_audit_findings_report(
     Each entry's hotspot_rows should already reflect reviewed judgment —
     e.g. regions assessed as camera artifacts (reflections, objects in frame)
     should be excluded from hotspot_rows before calling this, not included
-    with a caveat. entries.note is ignored by this report; use
+    with a caveat. entries.note is rendered as a visually-observed (non-
+    thermal) issue - e.g. physical damage a camera wouldn't catch - and is
+    enough on its own to keep an image from being treated as clean and
+    dropped from this report, even with no thermal hotspot_rows. Use
     generate_pdf_report if you need the fuller investigation-record version
     (every image individually, clean or not, plus a skipped-files appendix).
 
@@ -397,6 +402,10 @@ def generate_audit_findings_report(
                     for row in flagged_comparative
                 ]
                 story.append(_hotspot_table(comp_rows_with_location, comparative_columns, row_colors_map=COMPARATIVE_ROW_COLORS))
+
+            if entry.note:
+                story.append(Spacer(1, 0.1 * inch))
+                story.append(Paragraph(f"<b>Visual issue noted:</b> {entry.note}", styles["Normal"]))
 
             story.append(Spacer(1, 0.35 * inch))
 

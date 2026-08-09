@@ -152,6 +152,12 @@ const SEVERITY_ORDER = ['critical_immediate', 'critical', 'serious', 'minor'];
 let currentRunId = null;
 let currentUserRole = null;
 
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str ?? '';
+  return div.innerHTML;
+}
+
 document.getElementById('logoutBtn').addEventListener('click', async () => {
   await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
   window.location.href = '/login';
@@ -180,6 +186,20 @@ async function setExcludedHotspots(runId, imageId, indices) {
   return resp.json();
 }
 
+async function setVisualNote(runId, imageId, note) {
+  const resp = await fetch(`/api/history/${runId}/images/${imageId}/note`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note }),
+  });
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => ({}));
+    throw new Error(data.detail || 'Failed to save note');
+  }
+  return resp.json();
+}
+
 function badgesHtml(summary) {
   const counts = summary.counts_by_severity || {};
   const parts = SEVERITY_ORDER.filter((s) => counts[s]).map(
@@ -203,7 +223,7 @@ async function loadRuns() {
     tr.innerHTML = `
       <td>#${run.id}</td>
       <td>${when}</td>
-      <td>${run.created_by}</td>
+      <td>${escapeHtml(run.created_by)}</td>
       <td>${run.image_count}</td>
       <td>${badgesHtml(run.summary)}</td>
     `;
@@ -262,7 +282,7 @@ async function showDetail(runId) {
           <tbody>
             ${comparative.map((c) => `
               <tr>
-                <td>${c.label}</td>
+                <td>${escapeHtml(c.label)}</td>
                 <td>${c.severity || 'baseline / no flag'}</td>
                 <td>${c.delta_t_c}</td>
                 <td>${c.max_temp_c}</td>
@@ -272,20 +292,51 @@ async function showDetail(runId) {
       : '';
 
     const photoHtml = img.photo_url
-      ? `<figure><figcaption>Visual photo</figcaption><img src="${img.photo_url}" alt="Visual photo of ${img.filename}" /></figure>`
+      ? `<figure><figcaption>Visual photo</figcaption><img src="${img.photo_url}" alt="Visual photo of ${escapeHtml(img.filename)}" /></figure>`
       : '';
 
+    const noteHtml = canReview
+      ? `<div class="visual-note-block" style="margin-top: 0.75rem;">
+          <label style="display:block; font-size:0.85rem; color: var(--muted); margin-bottom:0.25rem;">Visual issue noted (non-thermal - e.g. physical damage, corrosion, a cracked enclosure)</label>
+          <textarea class="visual-note-input" data-image-id="${img.id}" rows="2" style="width:100%; max-width:520px; font-family:inherit;" placeholder="Describe what you observed...">${escapeHtml(img.visual_note || '')}</textarea>
+          <br/>
+          <button class="save-note-btn secondary" data-image-id="${img.id}" style="margin-top:0.35rem;">Save note</button>
+          <span class="note-status" data-image-id="${img.id}" style="font-size:0.8rem; color: var(--muted); margin-left:0.5rem;"></span>
+        </div>`
+      : img.visual_note
+        ? `<p style="margin-top:0.75rem;"><b>Visual issue noted:</b> ${escapeHtml(img.visual_note)}</p>`
+        : '';
+
     block.innerHTML = `
-      <h3 style="margin-bottom:0.15rem;">${img.filename}</h3>
+      <h3 style="margin-bottom:0.15rem;">${escapeHtml(img.filename)}</h3>
       <p style="color: var(--muted); font-size: 0.85rem; margin: 0 0 0.5rem;">Ambient reference: ${img.ambient_c}°C</p>
       <div class="image-pair">
-        <figure><figcaption>Thermal</figcaption><img id="thermal-img-${img.id}" src="${img.image_url}?v=${Date.now()}" alt="Annotated thermal image of ${img.filename}" /></figure>
+        <figure><figcaption>Thermal</figcaption><img id="thermal-img-${img.id}" src="${img.image_url}?v=${Date.now()}" alt="Annotated thermal image of ${escapeHtml(img.filename)}" /></figure>
         ${photoHtml}
       </div>
       ${rowsHtml}
       ${comparativeHtml}
+      ${noteHtml}
     `;
     imagesEl.appendChild(block);
+
+    block.querySelectorAll('.save-note-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const imageId = btn.dataset.imageId;
+        const textarea = block.querySelector(`.visual-note-input[data-image-id="${imageId}"]`);
+        const statusEl = block.querySelector(`.note-status[data-image-id="${imageId}"]`);
+        btn.disabled = true;
+        statusEl.textContent = 'Saving…';
+        try {
+          await setVisualNote(run.id, imageId, textarea.value);
+          statusEl.textContent = 'Saved.';
+        } catch (err) {
+          statusEl.textContent = err.message;
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    });
 
     block.querySelectorAll('.exclude-checkbox').forEach((box) => {
       box.addEventListener('change', async () => {
@@ -311,7 +362,7 @@ async function showDetail(runId) {
   skippedEl.innerHTML = '';
   if (run.skipped.length) {
     skippedEl.innerHTML = '<b style="color: var(--text);">Skipped files</b><br>' +
-      run.skipped.map((s) => `<b>${s.filename}:</b> ${s.reason}`).join('<br>');
+      run.skipped.map((s) => `<b>${escapeHtml(s.filename)}:</b> ${escapeHtml(s.reason)}`).join('<br>');
   }
 }
 
