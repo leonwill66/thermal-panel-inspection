@@ -68,6 +68,7 @@ class AnalysisImage(Base):
     visual_anomaly: Mapped[bool] = mapped_column(Boolean, default=False)  # explicit reviewer flag: a visible (non-thermal) issue was observed - drives report inclusion, unlike visual_note below
     visual_note: Mapped[str | None] = mapped_column(Text, nullable=True)  # optional description of the flagged issue, e.g. "cracked enclosure door" - not itself a flag, see visual_anomaly
     raw_image_path: Mapped[str | None] = mapped_column(String(500), nullable=True)  # the original uploaded FLIR JPEG, kept (unlike the temp upload dir) so emissivity can be recomputed later - None for images analyzed before this existed
+    asset_label: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)  # reviewer-entered tag identifying the physical component (e.g. "Main Panel - Breaker 3"), so the same component can be tracked across separate visits/runs - see /api/trend
 
     run: Mapped["AnalysisRun"] = relationship(back_populates="images")
 

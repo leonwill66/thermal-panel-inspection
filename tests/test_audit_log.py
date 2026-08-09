@@ -52,8 +52,8 @@ class TestAuditLogForVisualAnomaly:
         log = logged_in_client.get(f"/api/history/{run_id}/audit-log").json()["entries"]
         assert len(log) == 1
         assert log[0]["action"] == "set_visual_anomaly"
-        assert log[0]["detail"]["after"] == {"visual_note": "Cracked door", "visual_anomaly": True}
-        assert log[0]["detail"]["before"] == {"visual_note": None, "visual_anomaly": False}
+        assert log[0]["detail"]["after"] == {"visual_note": "Cracked door", "visual_anomaly": True, "asset_label": None}
+        assert log[0]["detail"]["before"] == {"visual_note": None, "visual_anomaly": False, "asset_label": None}
 
     def test_unchanged_note_does_not_log(self, logged_in_client, mock_radiometric):
         run_id, image_id = _upload_and_get_ids(logged_in_client)

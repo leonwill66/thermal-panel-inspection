@@ -152,6 +152,14 @@
   </div>
 </main>
 
+<dialog id="trendDialog" style="background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 1.25rem; max-width: 700px; width: 90vw;">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 0.75rem;">
+    <h3 id="trendTitle" style="margin:0;"></h3>
+    <button id="trendCloseBtn" class="secondary">Close</button>
+  </div>
+  <div id="trendContent"></div>
+</dialog>
+
 <script>
 const SEVERITY_ORDER = ['critical_immediate', 'critical', 'serious', 'minor'];
 let currentRunId = null;
@@ -191,12 +199,12 @@ async function setExcludedHotspots(runId, imageId, indices) {
   return resp.json();
 }
 
-async function setVisualNote(runId, imageId, note, anomaly) {
+async function setVisualNote(runId, imageId, note, anomaly, assetLabel) {
   const resp = await fetch(`/api/history/${runId}/images/${imageId}/note`, {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ note, anomaly }),
+    body: JSON.stringify({ note, anomaly, asset_label: assetLabel }),
   });
   if (!resp.ok) {
     const data = await resp.json().catch(() => ({}));
@@ -327,7 +335,11 @@ async function showDetail(runId) {
           </label>
           <textarea class="visual-note-input" data-image-id="${img.id}" rows="2" style="width:100%; max-width:520px; font-family:inherit;" placeholder="Optional: describe what you observed...">${escapeHtml(img.visual_note || '')}</textarea>
           <br/>
+          <label style="display:block; font-size:0.85rem; color: var(--muted); margin: 0.5rem 0 0.25rem;">Asset label (optional - tag this component to track it across visits)</label>
+          <input type="text" class="asset-label-input" data-image-id="${img.id}" value="${escapeHtml(img.asset_label || '')}" placeholder="e.g. Main Panel - Breaker 3" style="width:100%; max-width:520px;" />
+          <br/>
           <button class="save-note-btn secondary" data-image-id="${img.id}" style="margin-top:0.35rem;">Save</button>
+          ${img.asset_label ? `<button class="view-trend-btn secondary" data-label="${escapeHtml(img.asset_label)}" style="margin-top:0.35rem;">View trend for "${escapeHtml(img.asset_label)}"</button>` : ''}
           <span class="note-status" data-image-id="${img.id}" style="font-size:0.8rem; color: var(--muted); margin-left:0.5rem;"></span>
         </div>`
       : img.visual_anomaly
@@ -352,18 +364,22 @@ async function showDetail(runId) {
         const imageId = btn.dataset.imageId;
         const textarea = block.querySelector(`.visual-note-input[data-image-id="${imageId}"]`);
         const checkbox = block.querySelector(`.visual-anomaly-checkbox[data-image-id="${imageId}"]`);
+        const labelInput = block.querySelector(`.asset-label-input[data-image-id="${imageId}"]`);
         const statusEl = block.querySelector(`.note-status[data-image-id="${imageId}"]`);
         btn.disabled = true;
         statusEl.textContent = 'Saving…';
         try {
-          await setVisualNote(run.id, imageId, textarea.value, checkbox.checked);
-          statusEl.textContent = 'Saved.';
+          await setVisualNote(run.id, imageId, textarea.value, checkbox.checked, labelInput.value);
+          await showDetail(run.id);
         } catch (err) {
           statusEl.textContent = err.message;
-        } finally {
           btn.disabled = false;
         }
       });
+    });
+
+    block.querySelectorAll('.view-trend-btn').forEach((btn) => {
+      btn.addEventListener('click', () => showTrend(btn.dataset.label));
     });
 
     block.querySelectorAll('.recompute-btn').forEach((btn) => {
@@ -525,6 +541,55 @@ document.getElementById('gdocBtn').addEventListener('click', async () => {
     btn.disabled = false;
   }
 });
+
+document.getElementById('trendCloseBtn').addEventListener('click', () => {
+  document.getElementById('trendDialog').close();
+});
+
+function trendDirection(points) {
+  const withReadings = points.filter((p) => p.worst_delta_t_c !== null && p.worst_delta_t_c !== undefined);
+  if (withReadings.length < 2) return '';
+  const first = withReadings[0].worst_delta_t_c;
+  const last = withReadings[withReadings.length - 1].worst_delta_t_c;
+  const change = last - first;
+  if (change > 2) return `<p style="color:#ff9a5c;"><b>⬆ Worsening</b> - ΔT rose ${change.toFixed(1)}°C from the first to most recent reading.</p>`;
+  if (change < -2) return `<p style="color:#9ad19a;"><b>⬇ Improving</b> - ΔT fell ${Math.abs(change).toFixed(1)}°C from the first to most recent reading.</p>`;
+  return `<p style="color: var(--muted);">Stable - ΔT changed ${change.toFixed(1)}°C across readings.</p>`;
+}
+
+async function showTrend(label) {
+  const dialog = document.getElementById('trendDialog');
+  document.getElementById('trendTitle').textContent = label;
+  const contentEl = document.getElementById('trendContent');
+  contentEl.textContent = 'Loading…';
+  dialog.showModal();
+  try {
+    const resp = await fetch(`/api/trend?label=${encodeURIComponent(label)}`, { credentials: 'same-origin' });
+    if (!resp.ok) throw new Error('Failed to load trend');
+    const data = await resp.json();
+    if (!data.points.length) {
+      contentEl.innerHTML = '<p style="color: var(--muted);">No history for this asset label.</p>';
+      return;
+    }
+    const rowsHtml = data.points.map((p) => `
+      <tr>
+        <td>${new Date(p.run_created_at).toLocaleDateString()}</td>
+        <td>${escapeHtml(p.filename)}</td>
+        <td>${p.worst_severity || 'none'}</td>
+        <td>${p.worst_delta_t_c ?? '-'}</td>
+        <td>${p.worst_max_temp_c ?? '-'}</td>
+        <td>${p.visual_anomaly ? 'yes' : ''}</td>
+      </tr>`).join('');
+    contentEl.innerHTML = `
+      ${trendDirection(data.points)}
+      <table class="hotspots">
+        <thead><tr><th>Date</th><th>File</th><th>Severity</th><th>ΔT (°C)</th><th>Max (°C)</th><th>Visual anomaly</th></tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>`;
+  } catch (err) {
+    contentEl.textContent = err.message;
+  }
+}
 
 loadRuns();
 </script>

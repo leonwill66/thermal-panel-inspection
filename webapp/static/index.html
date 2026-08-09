@@ -377,12 +377,12 @@ async function setExcludedHotspots(runId, imageId, indices) {
   return resp.json();
 }
 
-async function setVisualNote(runId, imageId, note, anomaly) {
+async function setVisualNote(runId, imageId, note, anomaly, assetLabel) {
   const resp = await fetch(`/api/history/${runId}/images/${imageId}/note`, {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ note, anomaly }),
+    body: JSON.stringify({ note, anomaly, asset_label: assetLabel }),
   });
   if (!resp.ok) {
     const data = await resp.json().catch(() => ({}));
@@ -694,6 +694,9 @@ function renderResults(data) {
         </label>
         <textarea class="visual-note-input" data-image-id="${r.image_id}" rows="2" style="width:100%; max-width:520px; font-family:inherit;" placeholder="Optional: describe what you observed..."></textarea>
         <br/>
+        <label style="display:block; font-size:0.85rem; color: var(--muted); margin: 0.5rem 0 0.25rem;">Asset label (optional - tag this component to track it across visits)</label>
+        <input type="text" class="asset-label-input" data-image-id="${r.image_id}" placeholder="e.g. Main Panel - Breaker 3" style="width:100%; max-width:520px;" />
+        <br/>
         <button class="save-note-btn secondary" data-image-id="${r.image_id}" style="margin-top:0.35rem;">Save</button>
         <span class="note-status" data-image-id="${r.image_id}" style="font-size:0.8rem; color: var(--muted); margin-left:0.5rem;"></span>
       </div>`;
@@ -740,11 +743,12 @@ function renderResults(data) {
         const imageId = btn.dataset.imageId;
         const textarea = block.querySelector(`.visual-note-input[data-image-id="${imageId}"]`);
         const checkbox = block.querySelector(`.visual-anomaly-checkbox[data-image-id="${imageId}"]`);
+        const labelInput = block.querySelector(`.asset-label-input[data-image-id="${imageId}"]`);
         const noteStatusEl = block.querySelector(`.note-status[data-image-id="${imageId}"]`);
         btn.disabled = true;
         noteStatusEl.textContent = 'Saving…';
         try {
-          await setVisualNote(currentRunId, imageId, textarea.value, checkbox.checked);
+          await setVisualNote(currentRunId, imageId, textarea.value, checkbox.checked, labelInput.value);
           noteStatusEl.textContent = 'Saved.';
         } catch (err) {
           noteStatusEl.textContent = err.message;

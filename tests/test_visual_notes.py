@@ -35,7 +35,7 @@ class TestSetVisualNoteEndpoint:
             json={"note": "Cracked enclosure door", "anomaly": True},
         )
         assert resp.status_code == 200
-        assert resp.json() == {"visual_note": "Cracked enclosure door", "visual_anomaly": True}
+        assert resp.json() == {"visual_note": "Cracked enclosure door", "visual_anomaly": True, "asset_label": None}
 
         detail = logged_in_client.get(f"/api/history/{run_id}").json()
         assert detail["images"][0]["visual_note"] == "Cracked enclosure door"
@@ -56,7 +56,7 @@ class TestSetVisualNoteEndpoint:
             f"/api/history/{run_id}/images/{image_id}/note", json={"anomaly": True}
         )
         assert resp.status_code == 200
-        assert resp.json() == {"visual_note": None, "visual_anomaly": True}
+        assert resp.json() == {"visual_note": None, "visual_anomaly": True, "asset_label": None}
 
     def test_omitting_anomaly_defaults_to_false(self, logged_in_client, mock_radiometric):
         run_id, image_id = _upload_and_get_ids(logged_in_client)
@@ -68,7 +68,7 @@ class TestSetVisualNoteEndpoint:
         resp = logged_in_client.post(
             f"/api/history/{run_id}/images/{image_id}/note", json={"note": "   ", "anomaly": True}
         )
-        assert resp.json() == {"visual_note": None, "visual_anomaly": True}
+        assert resp.json() == {"visual_note": None, "visual_anomaly": True, "asset_label": None}
 
     def test_wrong_run_id_404s(self, logged_in_client, mock_radiometric):
         run_id, image_id = _upload_and_get_ids(logged_in_client)

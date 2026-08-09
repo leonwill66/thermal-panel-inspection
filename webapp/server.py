@@ -536,6 +536,7 @@ def set_visual_note(
     image_id: int,
     note: str | None = Body(None, embed=True),
     anomaly: bool = Body(False, embed=True),
+    asset_label: str | None = Body(None, embed=True),
     user: User = Depends(require_role("admin", "inspector")),
     db: Session = Depends(get_db),
 ):
@@ -547,13 +548,19 @@ def set_visual_note(
     image from being treated as 'clean' and dropped from the client-facing
     audit report); note is just supplementary text and doesn't affect
     inclusion by itself. Unlike hotspot findings this isn't detected
-    automatically, so there's nothing to recompute here - just persisted."""
+    automatically, so there's nothing to recompute here - just persisted.
+
+    asset_label optionally tags the physical component this image shows
+    (e.g. "Main Panel - Breaker 3"), so /api/trend can correlate it across
+    separate visits/runs - bundled into this endpoint since a reviewer sets
+    it from the same review panel as the note/flag, not a separate action."""
     img = db.get(AnalysisImage, image_id)
     if not img or img.run_id != run_id:
         raise HTTPException(status_code=404, detail="Image not found")
 
     new_note = note.strip() if note and note.strip() else None
-    if (img.visual_note, img.visual_anomaly) != (new_note, anomaly):
+    new_label = asset_label.strip() if asset_label and asset_label.strip() else None
+    if (img.visual_note, img.visual_anomaly, img.asset_label) != (new_note, anomaly, new_label):
         _log_audit(
             db,
             run_id=run_id,
@@ -561,14 +568,15 @@ def set_visual_note(
             user=user,
             action="set_visual_anomaly",
             detail={
-                "before": {"visual_note": img.visual_note, "visual_anomaly": img.visual_anomaly},
-                "after": {"visual_note": new_note, "visual_anomaly": anomaly},
+                "before": {"visual_note": img.visual_note, "visual_anomaly": img.visual_anomaly, "asset_label": img.asset_label},
+                "after": {"visual_note": new_note, "visual_anomaly": anomaly, "asset_label": new_label},
             },
         )
     img.visual_note = new_note
     img.visual_anomaly = anomaly
+    img.asset_label = new_label
     db.commit()
-    return {"visual_note": img.visual_note, "visual_anomaly": img.visual_anomaly}
+    return {"visual_note": img.visual_note, "visual_anomaly": img.visual_anomaly, "asset_label": img.asset_label}
 
 
 @app.post("/api/history/{run_id}/images/{image_id}/recompute-emissivity")
@@ -811,6 +819,59 @@ def list_history(user: User = Depends(get_current_user), db: Session = Depends(g
     return {"runs": [_run_summary(r) for r in runs]}
 
 
+@app.get("/api/trend/labels")
+def list_asset_labels(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Distinct asset labels currently in use, for populating a picker -
+    alphabetical, as stored (reviewers should keep labels consistent, but
+    this doesn't normalize or fuzzy-match near-duplicates)."""
+    rows = (
+        db.query(AnalysisImage.asset_label)
+        .filter(AnalysisImage.asset_label.isnot(None))
+        .distinct()
+        .order_by(AnalysisImage.asset_label)
+        .all()
+    )
+    return {"labels": [r[0] for r in rows]}
+
+
+@app.get("/api/trend")
+def get_trend(label: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Every image tagged with this asset label, across every run, oldest
+    first - so a reviewer can see how one physical component's readings
+    have moved across successive visits instead of judging each visit in
+    isolation, which is where a slowly-worsening connection is most likely
+    to get caught before it crosses into a higher severity band."""
+    images = (
+        db.query(AnalysisImage)
+        .join(AnalysisRun, AnalysisImage.run_id == AnalysisRun.id)
+        .filter(AnalysisImage.asset_label == label)
+        .order_by(AnalysisRun.created_at.asc())
+        .all()
+    )
+    points = []
+    for img in images:
+        rows = _effective_hotspot_rows(img)
+        worst = max(
+            rows,
+            key=lambda r: r.get("delta_t_corrected_c") if r.get("delta_t_corrected_c") is not None else r["delta_t_c"],
+            default=None,
+        )
+        points.append(
+            {
+                "run_id": img.run_id,
+                "image_id": img.id,
+                "run_created_at": img.run.created_at.isoformat(),
+                "filename": img.filename,
+                "ambient_c": img.ambient_c,
+                "worst_severity": worst["severity"] if worst else None,
+                "worst_delta_t_c": worst["delta_t_c"] if worst else None,
+                "worst_max_temp_c": worst["max_temp_c"] if worst else None,
+                "visual_anomaly": img.visual_anomaly,
+            }
+        )
+    return {"label": label, "points": points}
+
+
 @app.get("/api/history/{run_id}")
 def get_history_run(run_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     run = db.get(AnalysisRun, run_id)
@@ -843,6 +904,7 @@ def get_history_run(run_id: int, user: User = Depends(get_current_user), db: Ses
                 "visual_note": img.visual_note,
                 "visual_anomaly": img.visual_anomaly,
                 "can_recompute_emissivity": img.raw_image_path is not None,
+                "asset_label": img.asset_label,
             }
             for img in run.images
         ],

@@ -38,6 +38,7 @@ _COLUMN_MIGRATIONS = [
     ("analysis_images", "visual_note", "TEXT"),
     ("analysis_images", "visual_anomaly", "BOOLEAN NOT NULL DEFAULT FALSE"),
     ("analysis_images", "raw_image_path", "TEXT"),
+    ("analysis_images", "asset_label", "TEXT"),
 ]
 
 
